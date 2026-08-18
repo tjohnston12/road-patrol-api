@@ -157,6 +157,12 @@ const precipFor = season => (season === 'Summer' ? SUMMER_PRECIP : WINTER_PRECIP
 
 const { arr, sel, num, airtable } = L;
 
+// NOTE: shape() reads fields BY FIELD ID, so every Airtable call feeding it —
+// reads AND writes — must pass returnFieldsByFieldId=true. Without it Airtable
+// answers keyed by field name, every lookup here returns undefined, and the row
+// comes back hollow: blank Report ID, blank Season. That is what silently broke
+// the report email on 2026-08-18 (a Winter report with season:'' fell through to
+// the Summer branch and found no division, so no mailbox resolved).
 function shape(rec) {
   const f = rec.fields || {};
   return {
@@ -525,7 +531,7 @@ module.exports = async function handler(req, res) {
       const fields = toFields({ ...body, submittedBy: body.submittedBy || L.callerName(req) });
       fields[F.status] = isDraft ? 'In progress' : 'Submitted';
       if (!isDraft) fields[F.submittedAt] = new Date().toISOString();
-      const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
+      const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?returnFieldsByFieldId=true`, {
         method: 'POST', body: JSON.stringify({ fields }),
       });
       let row = shape(created), emailNote = '';
@@ -548,7 +554,7 @@ module.exports = async function handler(req, res) {
         const f = { [F.reviewedBy]: L.callerName(req), [F.reviewedAt]: new Date().toISOString() };
         if (CHOICES.reviewStatuses.includes(body.status)) f[F.status] = body.status;
         if (body.reviewNotes !== undefined) f[F.reviewNotes] = body.reviewNotes;
-        const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
+        const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}?returnFieldsByFieldId=true`, {
           method: 'PATCH', body: JSON.stringify({ fields: f }),
         });
         return res.status(200).json({ row: shape(updated) });
@@ -574,7 +580,7 @@ module.exports = async function handler(req, res) {
         fields[F.status] = 'Submitted';
         fields[F.submittedAt] = new Date().toISOString();
       }
-      const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
+      const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}?returnFieldsByFieldId=true`, {
         method: 'PATCH', body: JSON.stringify({ fields }),
       });
       let row = shape(updated), emailNote = '';
@@ -598,7 +604,7 @@ async function deliver(id, row, copyToPatroller) {
   try {
     const { sent, reason } = await emailReport(row, { copyToPatroller });
     if (!sent.length) return { row, emailNote: reason || 'nothing was sent' };
-    const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}`, {
+    const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`, {
       method: 'PATCH',
       body: JSON.stringify({ fields: { [F.emailedTo]: sent.join(', '), [F.emailedAt]: new Date().toISOString() } }),
     });
