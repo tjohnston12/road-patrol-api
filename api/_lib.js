@@ -143,11 +143,73 @@ async function uploadAttachment({ base, recordId, fieldId, filename, contentType
 // Best-effort transactional email through Resend. Returns the list of addresses
 // actually sent to, or [] when unconfigured/failed — never throws to the caller,
 // because a mail outage must not block a patroller filing at the roadside.
+// Send mail, and SAY WHY when nothing goes out.
+//
+// The plain sendMail() below returns just the recipient list, which means every
+// failure looks identical to "nothing to send" at the call site. That cost us an
+// afternoon on 2026-08-18 guessing at an empty API key from the outside. This
+// version returns the reason too, so a caller can surface it instead of
+// depending on the platform's log viewer.
+async function sendMailDetailed({ to, subject, html, from }) {
+  const key = process.env.RESEND_API_KEY;
+  const recipients = (Array.isArray(to) ? to : String(to || '').split(','))
+    .map(s => String(s).trim()).filter(Boolean);
+
+  if (!key) return { sent: [], reason: 'RESEND_API_KEY is missing or empty in this deployment' };
+  if (!recipients.length) {
+    return { sent: [], reason: 'no usable recipients — check the PATROL_MAIL_* values for blanks or stray whitespace' };
+  }
+  const fromAddr = from || process.env.MVA_FROM || 'MRDC Road Patrol <noreply@mrdc-htra.com>';
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromAddr, to: recipients, subject, html }),
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      return { sent: [], reason: `Resend rejected it (HTTP ${r.status}) from=${fromAddr}: ${body.slice(0, 300)}` };
+    }
+    return { sent: recipients, reason: '' };
+  } catch (e) {
+    return { sent: [], reason: `could not reach Resend: ${e.message}` };
+  }
+}
+
+async function sendMail(opts) {
+  const r = await sendMailDetailed(opts);
+  if (r.reason) console.error('sendMail:', r.reason);
+  return r.sent;
+}
+
+// Append a base64 file to an attachment field via the Airtable content API.
+async function uploadAttachment({ base, recordId, fieldId, filename, contentType, data }) {
+  const r = await fetch(`https://content.airtable.com/v0/${base}/${encodeURIComponent(recordId)}/${fieldId}/uploadAttachment`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${PAT}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contentType: contentType || 'application/octet-stream', file: data, filename: filename || 'upload' }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(j.error?.message || `Upload failed (${r.status})`);
+    e.status = r.status;
+    throw e;
+  }
+  return j;
+}
+
+// Best-effort transactional email through Resend. Returns the list of addresses
+// actually sent to, or [] when unconfigured/failed — never throws to the caller,
+// because a mail outage must not block a patroller filing at the roadside.
 async function sendMail({ to, subject, html, from }) {
   const key = process.env.RESEND_API_KEY;
   const recipients = (Array.isArray(to) ? to : String(to || '').split(','))
     .map(s => String(s).trim()).filter(Boolean);
-  if (!key || !recipients.length) return [];
+  // Say WHY nothing was sent. A silent skip here is indistinguishable from a
+  // successful send at the call site, which makes a misconfigured key look like
+  // a working one — that cost us a debugging session on 2026-08-18.
+  if (!key) { console.error('sendMail: RESEND_API_KEY is missing or empty — no email sent to', recipients.join(', ')); return []; }
+  if (!recipients.length) { console.error('sendMail: no recipients resolved — no email sent'); return []; }
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -169,5 +231,5 @@ module.exports = {
   PAT, EMP_BASE, EMP_TABLE, EF, PATROL_TITLES,
   arr, sel, num, esc,
   airtable, cors, corsOrigin, isAdmin, callerName, parseBody,
-  getEmployees, getPatrollers, uploadAttachment, sendMail,
+  getEmployees, getPatrollers, uploadAttachment, sendMail, sendMailDetailed,
 };

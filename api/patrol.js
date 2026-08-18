@@ -410,10 +410,13 @@ function reportHtml(row) {
 async function emailReport(row, { copyToPatroller } = {}) {
   const to = mailboxesFor(row);
   if (copyToPatroller && row.patrollerEmail && !to.includes(row.patrollerEmail)) to.push(row.patrollerEmail);
-  if (!to.length) return [];
+  if (!to.length) {
+    const where = row.season === 'Winter' ? `depot "${row.depot}"` : `division "${row.division}"`;
+    return { sent: [], reason: `no mailbox is configured for ${where}` };
+  }
   const winter = row.season === 'Winter';
   const where = winter ? row.depot : row.division;
-  return L.sendMail({
+  return L.sendMailDetailed({
     to,
     subject: `Patrol report ${row.shiftDate}${where ? ' — ' + where : ''}${row.shift ? ' (' + row.shift + ')' : ''} — ${row.patroller}`,
     html: reportHtml(row),
@@ -525,9 +528,12 @@ module.exports = async function handler(req, res) {
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
         method: 'POST', body: JSON.stringify({ fields }),
       });
-      let row = shape(created);
-      if (!isDraft) row = await deliver(created.id, row, body.copyToMe === true);
-      return res.status(200).json({ row, emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [] });
+      let row = shape(created), emailNote = '';
+      if (!isDraft) ({ row, emailNote } = await deliver(created.id, row, body.copyToMe === true));
+      return res.status(200).json({
+        row, emailNote,
+        emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [],
+      });
     }
 
     // ── PATCH: save a draft, submit it, or review it ─────────────────────
@@ -571,9 +577,12 @@ module.exports = async function handler(req, res) {
       const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
         method: 'PATCH', body: JSON.stringify({ fields }),
       });
-      let row = shape(updated);
-      if (submitting) row = await deliver(body.id, row, body.copyToMe === true);
-      return res.status(200).json({ row, emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [] });
+      let row = shape(updated), emailNote = '';
+      if (submitting) ({ row, emailNote } = await deliver(body.id, row, body.copyToMe === true));
+      return res.status(200).json({
+        row, emailNote,
+        emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [],
+      });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -587,16 +596,16 @@ module.exports = async function handler(req, res) {
 // already safely filed by the time this runs.
 async function deliver(id, row, copyToPatroller) {
   try {
-    const sent = await emailReport(row, { copyToPatroller });
-    if (!sent.length) return row;
+    const { sent, reason } = await emailReport(row, { copyToPatroller });
+    if (!sent.length) return { row, emailNote: reason || 'nothing was sent' };
     const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify({ fields: { [F.emailedTo]: sent.join(', '), [F.emailedAt]: new Date().toISOString() } }),
     });
-    return shape(upd);
+    return { row: shape(upd), emailNote: '' };
   } catch (e) {
     console.error('report email failed:', e.message);
-    return row;
+    return { row, emailNote: `report email threw: ${e.message}` };
   }
 }
 
