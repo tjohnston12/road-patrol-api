@@ -1,0 +1,6 @@
+{
+  "name": "road-patrol-api",
+  "version": "1.0.0",
+  "description": "MRDC Road Patrol app API (Vercel) — daily patrol reports, MVAs and the seasonal patrol logs",
+  "engines": { "node": "20.x" }
+}

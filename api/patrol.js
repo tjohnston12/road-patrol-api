@@ -1,0 +1,471 @@
+// api/patrol.js — road-patrol-api (Vercel)
+//
+// Daily patrol reports for the MRDC Road Patrol app (www.mrdc-htra.com/patrol/).
+// Base: MRDC-HTRA - Road Patrol (app2m7rkP51kLLpbe), table Patrol Reports.
+//
+// GET   /api/patrol              -> { rows, scope }  newest first
+// GET   /api/patrol?id=<rec>     -> { row }
+// GET   /api/patrol?mine=1       -> only the caller's own reports
+// GET   /api/patrol?meta=1       -> { choices }
+// POST  /api/patrol              -> file a daily patrol report -> { row }
+// PATCH /api/patrol { id, ... }  -> supervisor review (status / notes)
+//
+// STRUCTURE MIRRORS THE LIVE DEVICEMAGIC FORM ("Road Patrol Report", form_id
+// 5314604), read from its exported definition on 2026-08-18. The important part
+// is that the form is conditional, and the conditions are NOT symmetric:
+//
+//   Season = Summer -> Division is asked (Eastern / Western / Eastern & Western),
+//                      routes are the four summer routes,
+//                      precipitation is Fog / Rain / None (single choice).
+//   Season = Winter -> Depot is asked (Oromocto / Bagdad / River Glade),
+//                      DEPOT decides the route list:
+//                        Oromocto Depot      -> Western: Oromocto E/W, Mazerolle,
+//                                               Route 7, Burton Subdivision
+//                        Bagdad / River Glade-> Eastern: Bagdad E/W, River Glade E/W
+//                      precipitation is all six (multiple),
+//                      pavement temps are asked (and required),
+//                      SNIC ops + travel advisory are asked.
+//
+//   Intensity / Visibility are only asked when precipitation is something other
+//   than None. Routes Affected is winter-only, drawn from the routes patrolled.
+//
+// Deliberate improvement on the DeviceMagic form: it leaves "Winter Routes -
+// Western Division" not-required while requiring the Eastern one, which looks
+// like an oversight. Here at least one route is required either way.
+//
+// Env: AIRTABLE_PAT (read+write on the Road Patrol base, read on Employees),
+//      AIRTABLE_BASE, PATROL_TABLE.
+
+const L = require('./_lib');
+
+const BASE  = process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe';
+const TABLE = process.env.PATROL_TABLE  || 'tblosu2dzKTwhuHnf';
+const LIMIT = Number(process.env.PATROL_LIMIT || 500);
+
+const F = {
+  reportId:       'fldZ4JDUx4Tqc3eQ2', // primary
+  shiftDate:      'fldjJZKRSkgEvcR1O',
+  season:         'fldbG2jazLXbVSxNC',
+  shift:          'fldcNyZwC9MmebOz7',
+  patroller:      'fld2yQSx8QJ3Netq3',
+  patrollerEmail: 'fldPhRKJLHCyUyhRD',
+  division:       'fldxSnElZ4qJ6baHr', // summer only
+  depot:          'fld3gAxGzV1VTSDWn', // winter only
+  vehicle:        'fldRAvwQ4q1rQQnRy',
+  shiftStart:     'fldQvA6fxrGMzQX3F',
+  shiftEnd:       'fld3evTcidYDyquje',
+  routes:         'fldnh3pvj0twZu5Fe',
+  startAir:       'fldC9mQmdJ0xOWJ1j',
+  startPavement:  'fldi0girO56WKd3ZF',
+  endAir:         'fldUekPGIkjego5QA',
+  endPavement:    'fld71zzSHfKCwO1qx',
+  precipitation:  'fldjYJYEfIDqOUIVJ',
+  intensity:      'fldl9ebCBGw8ywjqS',
+  visibility:     'fldndoz491vcQYY5a',
+  routesAffected: 'fldv3Eh13Bn5ep2hr',
+  snic:           'fldjbHCvkAGktiUUE',
+  deficiencies:   'fldMXKeXvFRjqbknW',
+  advisory:       'fldMFMIEoY5Zf6fNJ',
+  illumination:   'fldtBUHrNfrNPPRH3',
+  markings:       'fldgLY0djjNO5CffH',
+  reflectivity:   'fldpKan2QFOMO1lZ5',
+  etStickers:     'fldkndqr7EZk8OwXN',
+  comments:       'fldNiSGurmSRpDwG2',
+  status:         'fldn1x0NeaoDQrlcq',
+  lastSavedAt:    'fldUBYVR0XrU6WObV',
+  reviewedBy:     'fldVYyoqFkAA8EKsV',
+  reviewedAt:     'flddz3qZXwaWn1I4D',
+  reviewNotes:    'fldyDEyQdJZKshvvZ',
+  source:         'fldfBSTkvlE3RxUHN',
+  submittedBy:    'fldfxE6AIHQIyhJvY',
+  submittedAt:    'fldTQy3UXRJoOnbCN',
+  shiftHours:     'fldwAxF512NrUYdnQ', // formula (read-only)
+};
+
+// ─── Pick-lists. Edit HERE to change what the form offers everywhere. ──────
+const SUMMER_ROUTES = ['Oromocto East', 'Oromocto West', 'River Glade East', 'River Glade West'];
+const WINTER_WESTERN = ['Oromocto East', 'Oromocto West', 'Mazerolle', 'Route 7', 'Burton Subdivision'];
+const WINTER_EASTERN = ['Bagdad East', 'Bagdad West', 'River Glade East', 'River Glade West'];
+const ALL_ROUTES = [...new Set([...SUMMER_ROUTES, ...WINTER_WESTERN, ...WINTER_EASTERN])];
+
+const SUMMER_PRECIP = ['None', 'Fog', 'Rain'];
+const WINTER_PRECIP = ['None', 'Fog', 'Rain', 'Freezing Rain', 'Snow', 'Blowing / Drifting Snow'];
+
+// The season rosters as they stand on the DeviceMagic form. Kept here so the
+// picker works standalone; the live Employees directory is also offered so a
+// patroller who is not on a roster can still be picked (the DM "Other" case)
+// and their email captured.
+const SUMMER_PATROLLERS = ['Jeremy MacDonald', 'Tom Gibson', 'Scott Brownell', 'Eugene Belyea'];
+const WINTER_PATROLLERS = ['Jeremy MacDonald', 'Tom Gibson', 'Mark Palmer', 'Stephen Palmer',
+  'Scott Brownell', 'Eugene Belyea', 'Ross Stewart', 'George Fearn', 'Jean-Guy Leaman', 'Tom Barrie'];
+
+const CHOICES = {
+  seasons:         ['Summer', 'Winter'],
+  shifts:          ['Day', 'Night'],
+  divisions:       ['Eastern', 'Western', 'Eastern & Western'],
+  depots:          ['Oromocto', 'Bagdad', 'River Glade'],
+  summerRoutes:    SUMMER_ROUTES,
+  winterWestern:   WINTER_WESTERN,
+  winterEastern:   WINTER_EASTERN,
+  routes:          ALL_ROUTES,
+  summerPrecip:    SUMMER_PRECIP,
+  winterPrecip:    WINTER_PRECIP,
+  intensity:       ['Light', 'Moderate', 'Heavy'],
+  visibility:      ['Good', 'Poor', 'Very Poor'],
+  statuses:        ['In progress', 'Submitted', 'Reviewed', 'Flagged'],
+  reviewStatuses:  ['Submitted', 'Reviewed', 'Flagged'],
+  summerPatrollers: SUMMER_PATROLLERS,
+  winterPatrollers: WINTER_PATROLLERS,
+};
+
+// The one rule worth having in a function: which routes are valid for a report.
+// Winter keys off the DEPOT, not the division — Oromocto Depot runs the western
+// routes, Bagdad and River Glade the eastern ones.
+function routesFor(season, depot) {
+  if (season === 'Summer') return SUMMER_ROUTES;
+  return depot === 'Oromocto' ? WINTER_WESTERN : WINTER_EASTERN;
+}
+const precipFor = season => (season === 'Summer' ? SUMMER_PRECIP : WINTER_PRECIP);
+
+const { arr, sel, num, airtable } = L;
+
+function shape(rec) {
+  const f = rec.fields || {};
+  return {
+    id:             rec.id,
+    reportId:       f[F.reportId] || '',
+    shiftDate:      f[F.shiftDate] || '',
+    season:         sel(f[F.season]),
+    shift:          sel(f[F.shift]),
+    patroller:      f[F.patroller] || '',
+    patrollerEmail: f[F.patrollerEmail] || '',
+    division:       sel(f[F.division]),
+    depot:          sel(f[F.depot]),
+    vehicle:        f[F.vehicle] || '',
+    shiftStart:     f[F.shiftStart] || '',
+    shiftEnd:       f[F.shiftEnd] || '',
+    shiftHours:     f[F.shiftHours] != null ? f[F.shiftHours] : null,
+    routes:         arr(f[F.routes]).map(sel),
+    startAir:       f[F.startAir] != null ? f[F.startAir] : null,
+    startPavement:  f[F.startPavement] != null ? f[F.startPavement] : null,
+    endAir:         f[F.endAir] != null ? f[F.endAir] : null,
+    endPavement:    f[F.endPavement] != null ? f[F.endPavement] : null,
+    precipitation:  arr(f[F.precipitation]).map(sel),
+    intensity:      sel(f[F.intensity]),
+    visibility:     sel(f[F.visibility]),
+    routesAffected: arr(f[F.routesAffected]).map(sel),
+    snic:           !!f[F.snic],
+    deficiencies:   !!f[F.deficiencies],
+    advisory:       !!f[F.advisory],
+    illumination:   !!f[F.illumination],
+    markings:       !!f[F.markings],
+    reflectivity:   !!f[F.reflectivity],
+    etStickers:     !!f[F.etStickers],
+    comments:       f[F.comments] || '',
+    status:         sel(f[F.status]) || 'Submitted',
+    lastSavedAt:    f[F.lastSavedAt] || '',
+    reviewedBy:     f[F.reviewedBy] || '',
+    reviewedAt:     f[F.reviewedAt] || '',
+    reviewNotes:    f[F.reviewNotes] || '',
+    source:         sel(f[F.source]) || 'Road Patrol app',
+    submittedBy:    f[F.submittedBy] || '',
+    submittedAt:    f[F.submittedAt] || '',
+    createdTime:    rec.createdTime,
+  };
+}
+
+function toFields(b) {
+  const f = {};
+  const winter = b.season === 'Winter';
+  const pick = (list, v) => (list.includes(v) ? v : undefined);
+  const pickMany = (list, vs) => arr(vs).filter(v => list.includes(v));
+  const set = (k, v) => { if (v !== undefined && v !== '') f[k] = v; };
+  const n = (k, v) => { const x = num(v); if (x !== undefined) f[k] = x; };
+
+  set(F.reportId,       b.reportId);
+  set(F.shiftDate,      b.shiftDate);
+  set(F.season,         pick(CHOICES.seasons, b.season));
+  set(F.shift,          pick(CHOICES.shifts,  b.shift));
+  set(F.patroller,      b.patroller);
+  set(F.patrollerEmail, b.patrollerEmail);
+  set(F.vehicle,        b.vehicle);
+  set(F.shiftStart,     b.shiftStart);
+  set(F.shiftEnd,       b.shiftEnd);
+  set(F.comments,       b.comments);
+  set(F.submittedBy,    b.submittedBy);
+
+  // Division is a summer field, Depot a winter one — never write the other, so
+  // a season change on the form cannot leave a stale value behind.
+  if (winter) set(F.depot,    pick(CHOICES.depots,    b.depot));
+  else        set(F.division, pick(CHOICES.divisions, b.division));
+
+  const validRoutes = routesFor(b.season, b.depot);
+  if (b.routes !== undefined) f[F.routes] = pickMany(validRoutes, b.routes);
+  // Routes Affected is winter-only on the DeviceMagic form, and only makes
+  // sense for routes actually patrolled.
+  if (winter && b.routesAffected !== undefined) {
+    const patrolled = pickMany(validRoutes, b.routes);
+    f[F.routesAffected] = arr(b.routesAffected).filter(r => patrolled.includes(r));
+  }
+
+  if (b.precipitation !== undefined) f[F.precipitation] = pickMany(precipFor(b.season), b.precipitation);
+  // Intensity and visibility only apply when there is actual precipitation.
+  const realPrecip = pickMany(precipFor(b.season), b.precipitation).filter(p => p !== 'None');
+  if (realPrecip.length) {
+    set(F.intensity,  pick(CHOICES.intensity,  b.intensity));
+    set(F.visibility, pick(CHOICES.visibility, b.visibility));
+  }
+
+  n(F.startAir, b.startAir);
+  n(F.endAir,   b.endAir);
+  if (winter) { n(F.startPavement, b.startPavement); n(F.endPavement, b.endPavement); }
+
+  // Checkboxes are written whenever the client sent a value for them, so an
+  // unticked box records a real "no" — but a partial draft save that omits them
+  // must not silently set every check to "no".
+  const cb = (k, v) => { if (v !== undefined) f[k] = !!v; };
+  cb(F.deficiencies, b.deficiencies);
+  cb(F.illumination, b.illumination);
+  cb(F.markings,     b.markings);
+  cb(F.reflectivity, b.reflectivity);
+  cb(F.etStickers,   b.etStickers);
+  // SNIC ops and travel advisory are winter questions.
+  if (winter) { cb(F.snic, b.snic); cb(F.advisory, b.advisory); }
+
+  f[F.source]      = 'Road Patrol app';
+  f[F.lastSavedAt] = new Date().toISOString();
+  return f;
+}
+
+async function getChoices() {
+  const [patrollers, vehicles] = await Promise.all([L.getPatrollers(), getVehicles()]);
+  return { ...CHOICES, patrollers, vehicles };
+}
+
+async function getVehicles() {
+  try {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '100');
+    qs.set('returnFieldsByFieldId', 'true');
+    qs.append('fields[]', F.vehicle);
+    qs.set('sort[0][field]', F.shiftDate);
+    qs.set('sort[0][direction]', 'desc');
+    const page = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+    const set = new Set();
+    for (const rec of (page.records || [])) {
+      const v = String(rec.fields?.[F.vehicle] || '').trim();
+      if (v) set.add(v);
+    }
+    return [...set].sort();
+  } catch (_) { return []; }
+}
+
+async function fetchRows({ mine, who }) {
+  const rows = [];
+  let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '100');
+    qs.set('returnFieldsByFieldId', 'true');
+    qs.set('sort[0][field]', F.shiftDate);
+    qs.set('sort[0][direction]', 'desc');
+    if (mine && who) {
+      const safe = String(who).toLowerCase().replace(/'/g, "\\'");
+      qs.set('filterByFormula', `OR(LOWER({Patroller}&'')='${safe}',LOWER({Submitted By}&'')='${safe}')`);
+    }
+    if (offset) qs.set('offset', offset);
+    const page = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+    rows.push(...(page.records || []));
+    offset = rows.length < LIMIT ? page.offset : null;
+  } while (offset);
+  return rows.slice(0, LIMIT);
+}
+
+async function findByReportId(reportId) {
+  if (!reportId) return null;
+  const qs = new URLSearchParams();
+  qs.set('maxRecords', '1');
+  qs.set('returnFieldsByFieldId', 'true');
+  qs.set('filterByFormula', `{Report ID}='${String(reportId).replace(/'/g, "\\'")}'`);
+  const j = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+  return (j.records || [])[0] || null;
+}
+
+// Has this patroller already filed for this date + shift? Used to warn on a
+// likely duplicate without blocking a genuine second report.
+async function findSameShift({ patroller, shiftDate, shift }) {
+  if (!patroller || !shiftDate) return null;
+  const qs = new URLSearchParams();
+  qs.set('maxRecords', '1');
+  qs.set('returnFieldsByFieldId', 'true');
+  const safe = String(patroller).toLowerCase().replace(/'/g, "\\'");
+  qs.set('filterByFormula',
+    `AND(LOWER({Patroller}&'')='${safe}',DATETIME_FORMAT({Shift Date},'YYYY-MM-DD')='${shiftDate}'` +
+    (shift ? `,{Shift}='${String(shift).replace(/'/g, "\\'")}'` : '') + ')');
+  const j = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+  return (j.records || [])[0] || null;
+}
+
+// The caller's currently-open shift report, newest first. There should only be
+// one, but if a stale draft is lying around we hand back the most recent.
+async function findOpenReport(who) {
+  if (!who) return null;
+  const qs = new URLSearchParams();
+  qs.set('maxRecords', '1');
+  qs.set('returnFieldsByFieldId', 'true');
+  qs.set('sort[0][field]', F.lastSavedAt);
+  qs.set('sort[0][direction]', 'desc');
+  const safe = String(who).toLowerCase().replace(/'/g, "\\'");
+  qs.set('filterByFormula',
+    `AND({Status}='In progress',OR(LOWER({Submitted By}&'')='${safe}',LOWER({Patroller}&'')='${safe}'))`);
+  const j = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+  return (j.records || [])[0] || null;
+}
+
+// A patroller owns a report while it is theirs and still in progress. Ownership
+// is by name, which is as strong as the x-user-* headers allow — the same
+// caveat that applies everywhere in this API.
+function ownsRow(req, rec) {
+  const f = rec.fields || {};
+  const me = L.callerName(req).trim().toLowerCase();
+  if (!me) return false;
+  return String(f[F.submittedBy] || '').trim().toLowerCase() === me ||
+         String(f[F.patroller]   || '').trim().toLowerCase() === me;
+}
+
+// Everything a completed report must have. Returns the first problem, or null.
+// Used on final submit only — a draft is allowed to be as empty as it likes.
+function validateComplete(b) {
+  if (!b.shiftDate) return 'Shift date is required';
+  if (!CHOICES.seasons.includes(b.season)) return 'Season is required';
+  if (!b.patroller) return 'Patroller is required';
+  if (b.season === 'Winter' && !CHOICES.depots.includes(b.depot)) return 'Depot is required on a winter report';
+  if (b.season === 'Summer' && !CHOICES.divisions.includes(b.division)) return 'Division is required on a summer report';
+  if (!String(b.vehicle || '').trim()) return 'Patrol vehicle # is required';
+  if (!b.shiftStart || !b.shiftEnd) return 'Shift start and end are required';
+  const validRoutes = routesFor(b.season, b.depot);
+  if (!arr(b.routes).filter(r => validRoutes.includes(r)).length) return 'At least one route patrolled is required';
+  if (!arr(b.precipitation).length) return 'Precipitation is required (choose None if there was none)';
+  if (b.season === 'Winter') {
+    if (num(b.startPavement) === undefined) return 'Start pavement temperature is required in winter';
+    if (num(b.endPavement) === undefined) return 'End pavement temperature is required in winter';
+  }
+  if (!String(b.comments || '').trim()) return 'Description / comments are required';
+  return null;
+}
+
+module.exports = async function handler(req, res) {
+  if (L.cors(req, res)) return;
+  if (!L.PAT) return res.status(500).json({ error: 'Server not configured (AIRTABLE_PAT missing)' });
+
+  try {
+    if (req.method === 'GET') {
+      if (String(req.query?.meta || '') === '1') {
+        return res.status(200).json({ choices: await getChoices() });
+      }
+      const id = req.query?.id;
+      if (id) {
+        const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`);
+        return res.status(200).json({ row: shape(rec) });
+      }
+      // The caller's currently-open shift report, so the app can offer to resume
+      // it instead of starting a second one.
+      if (String(req.query?.open || '') === '1') {
+        const rec = await findOpenReport(L.callerName(req));
+        return res.status(200).json({ row: rec ? shape(rec) : null });
+      }
+      if (req.query?.check === 'shift') {
+        const dup = await findSameShift({
+          patroller: req.query.patroller, shiftDate: req.query.shiftDate, shift: req.query.shift,
+        });
+        return res.status(200).json({ exists: !!dup, row: dup ? shape(dup) : null });
+      }
+      const mine = String(req.query?.mine || '') === '1' || !L.isAdmin(req);
+      const recs = await fetchRows({ mine, who: L.callerName(req) });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ rows: recs.map(shape), scope: mine ? 'mine' : 'all' });
+    }
+
+    const body = L.parseBody(req);
+
+    // ── POST: open a new report ──────────────────────────────────────────
+    // draft:true starts a shift report the patroller keeps open and fills in as
+    // the day goes on. It is validated only at final submit.
+    if (req.method === 'POST') {
+      const isDraft = body.draft === true;
+
+      if (!isDraft) {
+        const problem = validateComplete(body);
+        if (problem) return res.status(400).json({ error: problem });
+      } else if (!body.patroller && !L.callerName(req)) {
+        return res.status(400).json({ error: 'Patroller is required' });
+      }
+
+      const existing = await findByReportId(body.reportId);
+      if (existing) return res.status(200).json({ row: shape(existing), duplicate: true });
+
+      const fields = toFields({ ...body, submittedBy: body.submittedBy || L.callerName(req) });
+      fields[F.status] = isDraft ? 'In progress' : 'Submitted';
+      if (!isDraft) fields[F.submittedAt] = new Date().toISOString();
+      const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
+        method: 'POST', body: JSON.stringify({ fields }),
+      });
+      return res.status(200).json({ row: shape(created) });
+    }
+
+    // ── PATCH: save a draft, submit it, or review it ─────────────────────
+    if (req.method === 'PATCH') {
+      if (!body.id) return res.status(400).json({ error: 'id is required' });
+      const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}?returnFieldsByFieldId=true`);
+      const current = sel(rec.fields?.[F.status]) || 'Submitted';
+
+      // Supervisor review — status/notes on an already-submitted report.
+      if (body.review === true) {
+        if (!L.isAdmin(req)) return res.status(403).json({ error: 'Only supervisors and administrators can review reports.' });
+        const f = { [F.reviewedBy]: L.callerName(req), [F.reviewedAt]: new Date().toISOString() };
+        if (CHOICES.reviewStatuses.includes(body.status)) f[F.status] = body.status;
+        if (body.reviewNotes !== undefined) f[F.reviewNotes] = body.reviewNotes;
+        const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
+          method: 'PATCH', body: JSON.stringify({ fields: f }),
+        });
+        return res.status(200).json({ row: shape(updated) });
+      }
+
+      // Otherwise this is the patroller working on their own open report.
+      if (current !== 'In progress')
+        return res.status(409).json({ error: 'This report has already been submitted and can no longer be edited.' });
+      if (!ownsRow(req, rec) && !L.isAdmin(req))
+        return res.status(403).json({ error: 'This report belongs to another patroller.' });
+
+      const submitting = body.submit === true;
+      if (submitting) {
+        // Validate the merged picture: what is already stored, overlaid with
+        // whatever this final save is sending.
+        const merged = { ...shape(rec), ...stripUndefined(body) };
+        const problem = validateComplete(merged);
+        if (problem) return res.status(400).json({ error: problem });
+      }
+
+      const fields = toFields({ ...body, submittedBy: rec.fields?.[F.submittedBy] || L.callerName(req) });
+      if (submitting) {
+        fields[F.status] = 'Submitted';
+        fields[F.submittedAt] = new Date().toISOString();
+      }
+      const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
+        method: 'PATCH', body: JSON.stringify({ fields }),
+      });
+      return res.status(200).json({ row: shape(updated) });
+    }
+
+    return res.status(405).json({ error: 'Method not allowed' });
+  } catch (e) {
+    console.error('patrol error:', e);
+    return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
+  }
+};
+
+function stripUndefined(o) {
+  const out = {};
+  Object.keys(o || {}).forEach(k => { if (o[k] !== undefined && o[k] !== '') out[k] = o[k]; });
+  return out;
+}
