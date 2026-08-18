@@ -73,6 +73,8 @@ const F = {
   comments:       'fldNiSGurmSRpDwG2',
   status:         'fldn1x0NeaoDQrlcq',
   lastSavedAt:    'fldUBYVR0XrU6WObV',
+  emailedTo:      'fldcj4m2XfLUPBuy2',
+  emailedAt:      'fldZA2EYznl7FBkBl',
   reviewedBy:     'fldVYyoqFkAA8EKsV',
   reviewedAt:     'flddz3qZXwaWn1I4D',
   reviewNotes:    'fldyDEyQdJZKshvvZ',
@@ -91,13 +93,41 @@ const ALL_ROUTES = [...new Set([...SUMMER_ROUTES, ...WINTER_WESTERN, ...WINTER_E
 const SUMMER_PRECIP = ['None', 'Fog', 'Rain'];
 const WINTER_PRECIP = ['None', 'Fog', 'Rain', 'Freezing Rain', 'Snow', 'Blowing / Drifting Snow'];
 
-// The season rosters as they stand on the DeviceMagic form. Kept here so the
-// picker works standalone; the live Employees directory is also offered so a
-// patroller who is not on a roster can still be picked (the DM "Other" case)
-// and their email captured.
-const SUMMER_PATROLLERS = ['Jeremy MacDonald', 'Tom Gibson', 'Scott Brownell', 'Eugene Belyea'];
-const WINTER_PATROLLERS = ['Jeremy MacDonald', 'Tom Gibson', 'Mark Palmer', 'Stephen Palmer',
-  'Scott Brownell', 'Eugene Belyea', 'Ross Stewart', 'George Fearn', 'Jean-Guy Leaman', 'Tom Barrie'];
+// ─── Rosters come from the Employees directory, by job title ──────────────
+// Troy, 2026-08-18: drive these from the directory rather than a hard-coded
+// list, so they maintain themselves.
+//
+// The wrinkle: WINTER PATROLLERS ARE SEASONAL and are marked Inactive in the
+// directory out of season. Filtering the winter roster to active employees
+// would hide exactly the people it is for — so inactive staff are kept for the
+// winter roster, and only there. Summer stays active-only.
+const SUMMER_TITLES = ['Patroller - Full Time'];
+const WINTER_TITLES = ['Patroller - Full Time', 'Winter Patroller'];
+
+// ─── Where a finished report is emailed ───────────────────────────────────
+// The DeviceMagic form did this with a calculated "Mail To" field. The mailbox
+// follows the patch being patrolled, not the person:
+//   Western division / Oromocto Depot -> oromocto@mrdc.ca
+//   Bagdad Depot                      -> oromocto2@mrdc.ca
+//   Eastern division / River Glade    -> riverglade@mrdc.ca
+// A summer "Eastern & Western" report goes to both division mailboxes.
+const MAILBOX = {
+  west:      process.env.PATROL_MAIL_WEST      || 'oromocto@mrdc.ca',
+  bagdad:    process.env.PATROL_MAIL_BAGDAD    || 'oromocto2@mrdc.ca',
+  east:      process.env.PATROL_MAIL_EAST      || 'riverglade@mrdc.ca',
+};
+function mailboxesFor(row) {
+  if (row.season === 'Winter') {
+    if (row.depot === 'Oromocto')    return [MAILBOX.west];
+    if (row.depot === 'Bagdad')      return [MAILBOX.bagdad];
+    if (row.depot === 'River Glade') return [MAILBOX.east];
+    return [];
+  }
+  if (row.division === 'Western')           return [MAILBOX.west];
+  if (row.division === 'Eastern')           return [MAILBOX.east];
+  if (row.division === 'Eastern & Western') return [MAILBOX.west, MAILBOX.east];
+  return [];
+}
 
 const CHOICES = {
   seasons:         ['Summer', 'Winter'],
@@ -114,8 +144,6 @@ const CHOICES = {
   visibility:      ['Good', 'Poor', 'Very Poor'],
   statuses:        ['In progress', 'Submitted', 'Reviewed', 'Flagged'],
   reviewStatuses:  ['Submitted', 'Reviewed', 'Flagged'],
-  summerPatrollers: SUMMER_PATROLLERS,
-  winterPatrollers: WINTER_PATROLLERS,
 };
 
 // The one rule worth having in a function: which routes are valid for a report.
@@ -164,6 +192,8 @@ function shape(rec) {
     comments:       f[F.comments] || '',
     status:         sel(f[F.status]) || 'Submitted',
     lastSavedAt:    f[F.lastSavedAt] || '',
+    emailedTo:      f[F.emailedTo] || '',
+    emailedAt:      f[F.emailedAt] || '',
     reviewedBy:     f[F.reviewedBy] || '',
     reviewedAt:     f[F.reviewedAt] || '',
     reviewNotes:    f[F.reviewNotes] || '',
@@ -238,8 +268,20 @@ function toFields(b) {
 }
 
 async function getChoices() {
-  const [patrollers, vehicles] = await Promise.all([L.getPatrollers(), getVehicles()]);
-  return { ...CHOICES, patrollers, vehicles };
+  const [employees, vehicles] = await Promise.all([L.getEmployees(), getVehicles()]);
+  const named = t => employees.filter(e => e.titles.some(x => t.includes(x)));
+  // Summer: active only. Winter: keep inactive seasonal staff (see WINTER_TITLES).
+  const summerPatrollers = named(SUMMER_TITLES).filter(e => e.active);
+  const winterPatrollers = named(WINTER_TITLES);
+  const slim = e => ({ name: e.name, email: e.email, depot: e.depot, active: e.active });
+  return {
+    ...CHOICES,
+    summerPatrollers: summerPatrollers.map(slim),
+    winterPatrollers: winterPatrollers.map(slim),
+    // Every active employee, so "someone else" can still be resolved to an email.
+    patrollers: employees.filter(e => e.active).map(slim),
+    vehicles,
+  };
 }
 
 async function getVehicles() {
@@ -304,6 +346,79 @@ async function findSameShift({ patroller, shiftDate, shift }) {
     (shift ? `,{Shift}='${String(shift).replace(/'/g, "\\'")}'` : '') + ')');
   const j = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
   return (j.records || [])[0] || null;
+}
+
+// ─── The finished report, as an email ─────────────────────────────────────
+// Sent on final submit to the depot/division mailbox, plus the patroller's own
+// if they asked for a copy. Best-effort: a mail failure must never undo a
+// submitted report, so it is reported back but never thrown.
+function reportHtml(row) {
+  const e = L.esc;
+  const yn = v => (v ? 'Yes' : 'No');
+  const t  = v => (v ? String(v).replace('T', ' ').slice(0, 16) : '—');
+  const winter = row.season === 'Winter';
+
+  const rows = [
+    ['Patroller',    row.patroller],
+    ['Season',       row.season + (row.shift ? ' · ' + row.shift + ' shift' : '')],
+    [winter ? 'Depot' : 'Division', winter ? row.depot : row.division],
+    ['Patrol vehicle', row.vehicle],
+    ['Shift start',  t(row.shiftStart)],
+    ['Shift end',    t(row.shiftEnd)],
+    ['Shift length', row.shiftHours != null ? row.shiftHours + ' hours' : '—'],
+    ['Routes patrolled', (row.routes || []).join(', ')],
+    ['Air temp',     [row.startAir, row.endAir].filter(v => v != null).join(' → ') || '—'],
+  ];
+  if (winter) rows.push(['Pavement temp',
+    [row.startPavement, row.endPavement].filter(v => v != null).join(' → ') || '—']);
+  rows.push(['Precipitation', (row.precipitation || []).join(', ') || '—']);
+  if ((row.precipitation || []).some(p => p !== 'None')) {
+    rows.push(['Intensity', row.intensity || '—'], ['Visibility', row.visibility || '—']);
+    if ((row.routesAffected || []).length) rows.push(['Routes affected', row.routesAffected.join(', ')]);
+  }
+
+  const checks = [
+    ['OMM deficiencies entered', row.deficiencies],
+    ...(winter ? [['SNIC ops deployed', row.snic], ['Travel advisory issued / lifted', row.advisory]] : []),
+    ['Highway illumination inspection', row.illumination],
+    ['Pavement markings checked', row.markings],
+    ['Road sign reflectivity checked', row.reflectivity],
+    ['ET stickers & reflectors checked', row.etStickers],
+  ];
+
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;max-width:640px">
+  <div style="background:#1E2B5E;color:#fff;padding:16px 20px;border-bottom:3px solid #C9A84C">
+    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.65)">MRDC Road Patrol</div>
+    <div style="font-size:20px;font-weight:600;margin-top:2px">Daily Patrol Report — ${e(row.shiftDate)}</div>
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin:16px 0">
+    ${rows.map(([k, v]) => `<tr><td style="padding:7px 0;color:#6B6B6B;width:180px;vertical-align:top">${e(k)}</td>
+      <td style="padding:7px 0;font-weight:500">${e(v || '—')}</td></tr>`).join('')}
+  </table>
+  <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#15616D;margin:18px 0 6px">Shift checks</div>
+  <table style="width:100%;border-collapse:collapse">
+    ${checks.map(([k, v]) => `<tr><td style="padding:6px 0;border-bottom:1px solid #f2f1ee">${e(k)}</td>
+      <td style="padding:6px 0;border-bottom:1px solid #f2f1ee;text-align:right;font-weight:600;color:${v ? '#0F6E56' : '#6B6B6B'}">${yn(v)}</td></tr>`).join('')}
+  </table>
+  ${row.comments ? `<div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#15616D;margin:18px 0 6px">Comments</div>
+    <div style="background:#f7f7f5;border:1px solid #DDD9D0;border-radius:8px;padding:11px 13px;white-space:pre-wrap">${e(row.comments)}</div>` : ''}
+  <p style="margin-top:18px;font-size:12px;color:#6B6B6B">Report ${e(row.reportId)} · filed by ${e(row.submittedBy || row.patroller)} via the MRDC Road Patrol app.</p>
+</div>`;
+}
+
+// Email a submitted report and stamp where it went. Returns the recipient list.
+async function emailReport(row, { copyToPatroller } = {}) {
+  const to = mailboxesFor(row);
+  if (copyToPatroller && row.patrollerEmail && !to.includes(row.patrollerEmail)) to.push(row.patrollerEmail);
+  if (!to.length) return [];
+  const winter = row.season === 'Winter';
+  const where = winter ? row.depot : row.division;
+  return L.sendMail({
+    to,
+    subject: `Patrol report ${row.shiftDate}${where ? ' — ' + where : ''}${row.shift ? ' (' + row.shift + ')' : ''} — ${row.patroller}`,
+    html: reportHtml(row),
+    from: process.env.PATROL_FROM,
+  });
 }
 
 // The caller's currently-open shift report, newest first. There should only be
@@ -410,7 +525,9 @@ module.exports = async function handler(req, res) {
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
         method: 'POST', body: JSON.stringify({ fields }),
       });
-      return res.status(200).json({ row: shape(created) });
+      let row = shape(created);
+      if (!isDraft) row = await deliver(created.id, row, body.copyToMe === true);
+      return res.status(200).json({ row, emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [] });
     }
 
     // ── PATCH: save a draft, submit it, or review it ─────────────────────
@@ -454,7 +571,9 @@ module.exports = async function handler(req, res) {
       const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
         method: 'PATCH', body: JSON.stringify({ fields }),
       });
-      return res.status(200).json({ row: shape(updated) });
+      let row = shape(updated);
+      if (submitting) row = await deliver(body.id, row, body.copyToMe === true);
+      return res.status(200).json({ row, emailedTo: row.emailedTo ? row.emailedTo.split(', ') : [] });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -463,6 +582,23 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
+
+// Send the report and record where it went. Never throws — the report is
+// already safely filed by the time this runs.
+async function deliver(id, row, copyToPatroller) {
+  try {
+    const sent = await emailReport(row, { copyToPatroller });
+    if (!sent.length) return row;
+    const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ fields: { [F.emailedTo]: sent.join(', '), [F.emailedAt]: new Date().toISOString() } }),
+    });
+    return shape(upd);
+  } catch (e) {
+    console.error('report email failed:', e.message);
+    return row;
+  }
+}
 
 function stripUndefined(o) {
   const out = {};

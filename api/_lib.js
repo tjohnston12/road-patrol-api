@@ -74,12 +74,17 @@ const isAdmin = req =>
 const callerName  = req => String(req.headers['x-user-name'] || '');
 const parseBody   = req => (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}));
 
-// Live patroller list: active people who either hold a road-going job title,
-// have Patrol in their App Access, or are an Owner. Falls back to every active
-// employee if that yields nothing, so the picker is never empty on day one.
-async function getPatrollers() {
+// Every employee in the directory, shaped for the apps. Returns ALL of them —
+// active and inactive — because callers need different slices:
+//
+//   Winter patrollers are SEASONAL. Out of season they are marked Inactive in
+//   the directory, so an active-only filter would hide exactly the people the
+//   winter roster needs. Callers that want a live roster decide for themselves
+//   whether inactive counts (see patrol.js), rather than having that judgement
+//   baked in here.
+async function getEmployees() {
   try {
-    const all = [], patrol = [];
+    const out = [];
     let offset;
     do {
       const qs = new URLSearchParams();
@@ -92,19 +97,31 @@ async function getPatrollers() {
         const f = rec.fields || {};
         const name = f[EF.name];
         if (!name) continue;
-        if (sel(f[EF.active]) === 'Inactive') continue;
-        const person = { name, email: f[EF.email] || '', depot: sel(f[EF.depot]) };
-        all.push(person);
-        const titles = arr(f[EF.jobTitle]).map(sel);
-        if (titles.some(t => PATROL_TITLES.includes(t)) ||
-            arr(f[EF.appAccess]).map(sel).includes('Patrol') ||
-            sel(f[EF.role]) === 'Owner') patrol.push(person);
+        out.push({
+          name,
+          email:  f[EF.email] || '',
+          depot:  sel(f[EF.depot]),
+          role:   sel(f[EF.role]),
+          titles: arr(f[EF.jobTitle]).map(sel),
+          apps:   arr(f[EF.appAccess]).map(sel),
+          active: sel(f[EF.active]) !== 'Inactive',
+        });
       }
       offset = page.offset;
     } while (offset);
-    const out = patrol.length ? patrol : all;
     return out.sort((a, b) => a.name.localeCompare(b.name));
   } catch (_) { return []; }
+}
+
+// Active people who either hold a road-going job title, have Patrol in their
+// App Access, or are an Owner. Falls back to every active employee if that
+// yields nothing, so a picker is never empty on day one.
+async function getPatrollers() {
+  const all = await getEmployees();
+  const active = all.filter(p => p.active);
+  const patrol = active.filter(p =>
+    p.titles.some(t => PATROL_TITLES.includes(t)) || p.apps.includes('Patrol') || p.role === 'Owner');
+  return (patrol.length ? patrol : active).map(({ name, email, depot }) => ({ name, email, depot }));
 }
 
 // Append a base64 file to an attachment field via the Airtable content API.
@@ -152,5 +169,5 @@ module.exports = {
   PAT, EMP_BASE, EMP_TABLE, EF, PATROL_TITLES,
   arr, sel, num, esc,
   airtable, cors, corsOrigin, isAdmin, callerName, parseBody,
-  getPatrollers, uploadAttachment, sendMail,
+  getEmployees, getPatrollers, uploadAttachment, sendMail,
 };
