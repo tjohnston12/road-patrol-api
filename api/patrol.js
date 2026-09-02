@@ -20,7 +20,7 @@
 //   Season = Winter -> Depot is asked (Oromocto / Bagdad / River Glade),
 //                      DEPOT decides the route list:
 //                        Oromocto Depot      -> Western: Oromocto E/W, Mazerolle,
-//                                               Route 7, Burton Subdivision
+//                                               Route 7
 //                        Bagdad / River Glade-> Eastern: Bagdad E/W, River Glade E/W
 //                      precipitation is all six (multiple),
 //                      pavement temps are asked (and required),
@@ -86,7 +86,15 @@ const F = {
 
 // ─── Pick-lists. Edit HERE to change what the form offers everywhere. ──────
 const SUMMER_ROUTES = ['Oromocto East', 'Oromocto West', 'River Glade East', 'River Glade West'];
-const WINTER_WESTERN = ['Oromocto East', 'Oromocto West', 'Mazerolle', 'Route 7', 'Burton Subdivision'];
+// Burton Subdivision was REMOVED 2026-09-02. Troy: "Burton subdivision was a
+// contract for a short period, not OMM" — it is not MRDC's to patrol, so offering
+// it invited a patroller to record work against a route outside the agreement.
+// No stored report ever used it (all 12 rows checked before removing).
+// Mazerolle stays: it is a plow route Oromocto's patrollers cover. Note that
+// Mazerolle is ALSO a depot in the Employees directory — a vehicle and storage
+// depot with plow operators and NO patrollers, which is why it is absent from the
+// depot list here. Two meanings, one word; do not "fix" one into the other.
+const WINTER_WESTERN = ['Oromocto East', 'Oromocto West', 'Mazerolle', 'Route 7'];
 const WINTER_EASTERN = ['Bagdad East', 'Bagdad West', 'River Glade East', 'River Glade West'];
 const ALL_ROUTES = [...new Set([...SUMMER_ROUTES, ...WINTER_WESTERN, ...WINTER_EASTERN])];
 
@@ -626,3 +634,13 @@ function stripUndefined(o) {
   Object.keys(o || {}).forEach(k => { if (o[k] !== undefined && o[k] !== '') out[k] = o[k]; });
   return out;
 }
+
+// Exposed for _tests/test-patrol-choices.js. The pick-lists ARE the contract the
+// form renders from — the page holds no route list of its own — so they are worth
+// asserting directly and not only through a browser.
+// NOTE: this must come AFTER the `module.exports = handler` assignment above, or
+// that assignment replaces the whole exports object and takes __test with it.
+module.exports.__test = {
+  SUMMER_ROUTES, WINTER_WESTERN, WINTER_EASTERN, ALL_ROUTES,
+  SUMMER_PRECIP, WINTER_PRECIP, CHOICES, routesFor, precipFor,
+};
