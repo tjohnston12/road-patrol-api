@@ -110,7 +110,7 @@ const WINTER_PRECIP = ['None', 'Fog', 'Rain', 'Freezing Rain', 'Snow', 'Blowing 
 // would hide exactly the people it is for — so inactive staff are kept for the
 // winter roster, and only there. Summer stays active-only.
 const SUMMER_TITLES = ['Patroller - Full Time'];
-const WINTER_TITLES = ['Patroller - Full Time', 'Winter Patroller'];
+const WINTER_TITLES = ['Patroller - Full Time', 'Patroller - Winter'];
 
 // ─── Where a finished report is emailed ───────────────────────────────────
 // The DeviceMagic form did this with a calculated "Mail To" field. The mailbox
@@ -643,4 +643,5 @@ function stripUndefined(o) {
 module.exports.__test = {
   SUMMER_ROUTES, WINTER_WESTERN, WINTER_EASTERN, ALL_ROUTES,
   SUMMER_PRECIP, WINTER_PRECIP, CHOICES, routesFor, precipFor,
+  SUMMER_TITLES, WINTER_TITLES, getChoices,
 };

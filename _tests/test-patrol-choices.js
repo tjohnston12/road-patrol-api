@@ -143,6 +143,100 @@ if (m) {
      /15 Oct(ober)?\s*(&ndash;|–|-)\s*15 Apr/.test(html) && /change it if/.test(html));
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail) { console.log('\nFAILURES:'); failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1); }
-process.exit(0);
+// ── the seasonal rosters, driven by Job Title — added 2026-09-03 ────────────
+// James Rodey, Ross Stewart, David Hayes, Brendan Annis and Jean-Guy Leaman were
+// silently missing from the Daily Patrol Report's Patroller picker, in BOTH
+// seasons, because WINTER_TITLES held 'Winter Patroller' where the real Employees
+// Job Title is 'Patroller - Winter' — reversed. Airtable's own choice is the
+// source of truth (verified via the table schema); a plausible-looking respelling
+// of it is exactly the class of bug this suite exists to catch (see the header
+// comment in test-training-required-for.js for the sibling bug in a different
+// repo). Until now SUMMER_TITLES/WINTER_TITLES were pinned as arrays but never
+// run through the actual matching logic, and getEmployees()/getPatrollers() were
+// stubbed to return [] — so a typo'd title string could sit here indefinitely
+// with the suite green throughout.
+//
+// This exercises the real getChoices() end to end against a fixture roster, by
+// swapping the stub's getEmployees() for one that returns Employees-shaped rows —
+// the same {name, email, depot, role, titles, apps, active} shape _lib.js's real
+// getEmployees() produces.
+const lib = require(libPath);
+const FIXTURE_EMPLOYEES = [
+  { name: 'Jeremy MacDonald', email: 'jeremy@example.com', depot: 'Oromocto', role: 'Employee',
+    titles: ['Patroller - Full Time'], apps: [], active: true },
+  // The exact shape of the bug: sole title is "Patroller - Winter", no App
+  // Access grant to fall back on. Must appear on the winter roster and NOT on
+  // the summer one.
+  { name: 'James Rodey', email: 'james@example.com', depot: 'Bagdad', role: 'Employee',
+    titles: ['Patroller - Winter'], apps: [], active: true },
+  // Winter patrollers are marked Inactive out of season — must still appear on
+  // the winter roster (that is the whole point of WINTER_TITLES keeping
+  // inactive staff), but never on the summer one.
+  { name: 'Ross Stewart', email: 'ross@example.com', depot: 'River Glade', role: 'Employee',
+    titles: ['Patroller - Winter'], apps: [], active: false },
+  // An inactive full-time patroller: winter has no active filter at all (by
+  // design — see the WINTER_TITLES comment above), so they still show on the
+  // winter roster; summer filters to active-only, so they must NOT show there.
+  { name: 'Tom Gibson', email: 'tom@example.com', depot: 'Oromocto', role: 'Employee',
+    titles: ['Patroller - Full Time'], apps: [], active: false },
+  // No qualifying title or app access at all — must appear on neither roster.
+  { name: 'Someone Else', email: 'else@example.com', depot: 'Oromocto', role: 'Employee',
+    titles: ['Office Staff'], apps: [], active: true },
+];
+lib.getEmployees = async () => FIXTURE_EMPLOYEES;
+
+(async () => {
+  eq('WINTER_TITLES carries the real Job Title, not a respelling of it',
+     T.WINTER_TITLES, ['Patroller - Full Time', 'Patroller - Winter']);
+  ok('and never the old typo\'d value', !T.WINTER_TITLES.includes('Winter Patroller'),
+     T.WINTER_TITLES.join(' | '));
+
+  const choices = await T.getChoices();
+  const names = list => list.map(p => p.name);
+
+  eq('winter roster includes an active Patroller - Winter employee',
+     names(choices.winterPatrollers).includes('James Rodey'), true);
+  eq('and an INACTIVE Patroller - Winter employee too (seasonal, kept for winter)',
+     names(choices.winterPatrollers).includes('Ross Stewart'), true);
+  eq('winter roster keeps an inactive full-time patroller too (no active filter in winter)',
+     names(choices.winterPatrollers).includes('Tom Gibson'), true);
+  eq('winter roster excludes someone with no qualifying title',
+     names(choices.winterPatrollers).includes('Someone Else'), false);
+
+  eq('summer roster (active-only) includes the full-time patroller',
+     names(choices.summerPatrollers).includes('Jeremy MacDonald'), true);
+  eq('summer roster excludes a winter-only patroller',
+     names(choices.summerPatrollers).includes('James Rodey'), false);
+  eq('summer roster excludes an inactive full-time patroller (active-only filter)',
+     names(choices.summerPatrollers).includes('Tom Gibson'), false);
+
+  // ── the second, independent copy of the same typo, in _lib.js's PATROL_TITLES
+  // ──────────────────────────────────────────────────────────────────────────
+  // _lib.js is stubbed out above so patrol.js can load without credentials, which
+  // means its real PATROL_TITLES can't be exercised through a live require the
+  // way WINTER_TITLES was above. Pull it out of the actual source instead — the
+  // same technique this file already uses for seasonFor() in the HTML — so this
+  // tests the shipped array, not a copy of it.
+  const libSrc = fs.readFileSync(libPath, 'utf8');
+  const ptMatch = libSrc.match(/const PATROL_TITLES = (\[[\s\S]*?\]);/);
+  ok('PATROL_TITLES can still be found in _lib.js',
+     !!ptMatch, 'the regex no longer matches — find it and fix this test, do not delete it');
+  if (ptMatch) {
+    const PATROL_TITLES = new Function('return ' + ptMatch[1])();
+    ok('_lib.js PATROL_TITLES carries the real Job Title, not a respelling of it',
+       PATROL_TITLES.includes('Patroller - Winter'), PATROL_TITLES.join(' | '));
+    ok('and never the old typo\'d value',
+       !PATROL_TITLES.includes('Winter Patroller'), PATROL_TITLES.join(' | '));
+    // getPatrollers()'s own predicate, reimplemented against the fixture — trivial
+    // enough (a single .some/.includes) that this is testing the DATA, which is
+    // exactly where the bug lived, not reimplementing logic worth its own bug.
+    const matches = FIXTURE_EMPLOYEES.filter(e => e.active &&
+      (e.titles.some(t => PATROL_TITLES.includes(t)) || e.apps.includes('Patrol') || e.role === 'Owner'));
+    ok('getPatrollers()\'s title match picks up James Rodey even with no App Access fallback',
+       matches.map(e => e.name).includes('James Rodey'), matches.map(e => e.name).join(' | '));
+  }
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) { console.log('\nFAILURES:'); failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1); }
+  process.exit(0);
+})();

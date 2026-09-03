@@ -25,7 +25,7 @@ const EF = {
 // Job titles that put someone on the road. Seeds the patroller picker so it is
 // useful before "Patrol" has been granted in anyone's App Access.
 const PATROL_TITLES = [
-  'Patroller - Full Time', 'Winter Patroller', 'Supervisor / Operator',
+  'Patroller - Full Time', 'Patroller - Winter', 'Supervisor / Operator',
   'Area Manager', 'Annual Inspector',
 ];
 
