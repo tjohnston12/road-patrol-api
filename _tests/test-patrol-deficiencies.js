@@ -98,8 +98,9 @@ const row = (o = {}) => ({ seq: 1, standard: 'OMM 101', finding: 'Potholes', rou
   /* This JSON comes from a browser and lands on a contractual record, so the
      shape is a whitelist, not a filter. */
   const c = T.cleanDef({ ...row(), evil: '<script>', wo: 'WO-1', Status: 'Closed', __proto__: { x: 1 } });
-  const ALLOWED = ['description', 'direction', 'dup', 'finding', 'km', 'photos', 'photosSent',
-                   'route', 'seq', 'standard', 'toKm', 'wo'];
+  const ALLOWED = ['assetId', 'assetName', 'description', 'direction', 'dup', 'finding', 'km',
+                   'lat', 'lng', 'photos', 'photosSent', 'route', 'seq', 'side', 'standard',
+                   'toKm', 'wo'];
   eq('unknown keys do not survive', Object.keys(c).filter(k => ALLOWED.indexOf(k) < 0), []);
   ok('nothing the client invented is there', !('evil' in c) && !('Status' in c) && !('x' in c),
      Object.keys(c).join(','));
@@ -121,6 +122,40 @@ eq('a non-object is dropped', T.cleanDef('OMM 101'), null);
   ok('and so is a blank To KM', !('toKm' in c), JSON.stringify(c));
 }
 eq('a km given as text is stored as a number', T.cleanDef({ ...row(), km: '312.4' }).km, 312.4);
+
+/* ⚠️ The asset number. Intake's lookupAsset() fills the work order's type, name,
+   route and km from the register with it, and its "is this already reported?"
+   check is keyed on Asset ID + Standard — so a row that drops it is a culvert
+   that can be raised twice with nothing noticing. Troy: "missing the asset
+   numbers is not helpful". */
+{
+  const c = T.cleanDef(row({ assetId: 'MRDC-CV-0012', side: 'Left Side' }));
+  eq('the asset number is kept', c.assetId, 'MRDC-CV-0012');
+  eq('and the side', c.side, 'Left Side');
+  const long = T.cleanDef(row({ assetId: 'x'.repeat(500) })).assetId || '';
+  ok('a runaway asset number is cut to the cap', long.length === 60, String(long.length));
+  /* The register's own name for the asset, as the patroller saw it in the
+     picker. Denormalised onto the report so it reads without a join — what
+     Media, Inspections and Asset Messages already do. */
+  eq('the asset name the patroller picked is kept',
+     T.cleanDef(row({ assetName: '6-ST26 — Storm Sewer' })).assetName, '6-ST26 — Storm Sewer');
+  const longName = T.cleanDef(row({ assetName: 'y'.repeat(500) })).assetName || '';
+  ok('and it is bounded too', longName.length === 120, String(longName.length));
+}
+{
+  const c = T.cleanDef(row({ lat: '45.921004', lng: '-66.678120' }));
+  eq('coordinates given as text are stored as numbers', [c.lat, c.lng], [45.921004, -66.67812]);
+  /* A coordinate outside its own range is not a coordinate. Keeping it would
+     drop the map pin in the wrong hemisphere; dropping it leaves the work order
+     located by route + km, which is how the depot finds things anyway. */
+  ok('a latitude past the pole is dropped', !('lat' in T.cleanDef(row({ lat: 91 }))));
+  ok('and a longitude past the meridian', !('lng' in T.cleanDef(row({ lng: -181 }))));
+  ok('text that is not a number is dropped', !('lat' in T.cleanDef(row({ lat: 'here' }))));
+  /* ⚠️ Number('') is 0, not NaN, and 0,0 is a real place in the Gulf of Guinea. */
+  ok('and a blank one is absent rather than zero', !('lat' in T.cleanDef(row({ lat: '' }))),
+     JSON.stringify(T.cleanDef(row({ lat: '' }))));
+  eq('but a genuine zero is kept', T.cleanDef(row({ lat: 0 })).lat, 0);
+}
 {
   const many = Array.from({ length: T.MAX_DEFS + 10 }, (_, i) => row({ seq: i + 1 }));
   eq('a shift cannot store an unbounded number of rows', T.cleanDefs(many).length, T.MAX_DEFS);
@@ -301,6 +336,33 @@ const recOf = (defsJson, extra = {}) => ({ id: 'recRPT0000000001', fields: {
   await T.raiseDeficiencies('recRPT0000000001', recOf(null), [row()]);
   ok('a row with no photo sends no photoUrls key at all',
      !('photoUrls' in seen[0].body.deficiencies[0]), JSON.stringify(seen[0].body.deficiencies[0]));
+}
+{
+  /* ⚠️ Intake calls them latitude/longitude, not lat/lng, and its asset lookup
+     and duplicate check both run on assetId. A rename lost in transit here is
+     silent: the work order is still created, just without the asset. */
+  const seen = stubIntake();
+  await T.raiseDeficiencies('recRPT0000000001', recOf(null),
+    [row({ assetId: 'MRDC-CV-0012', assetName: 'Storm sewer at 441', side: 'Left Side',
+           direction: 'EB', toKm: 313, lat: 45.921004, lng: -66.67812 })]);
+  const d = seen[0].body.deficiencies[0];
+  eq('the asset number reaches intake under the name it reads', d.assetId, 'MRDC-CV-0012');
+  /* ⚠️ NOT the name. Intake resolves that from the register itself, and the
+     register is the authority on what an asset is called — a name typed here
+     six months ago would quietly outrank it. */
+  ok('but the asset NAME is not sent on to the DMT', !('assetName' in d), JSON.stringify(d));
+  eq('the side travels', d.side, 'Left Side');
+  eq('the direction travels', d.direction, 'EB');
+  eq('the range end travels', d.toKm, 313);
+  eq('and the coordinates arrive as latitude/longitude', [d.latitude, d.longitude],
+     [45.921004, -66.67812]);
+}
+{
+  const seen = stubIntake();
+  await T.raiseDeficiencies('recRPT0000000001', recOf(null), [row()]);
+  const d = seen[0].body.deficiencies[0];
+  ok('a row with no asset number sends no assetId key at all', !('assetId' in d), JSON.stringify(d));
+  ok('and no empty coordinates', !('latitude' in d) && !('longitude' in d), JSON.stringify(d));
 }
 {
   /* ⚠️ The catch-up. A patroller on one bar raises the pothole immediately —

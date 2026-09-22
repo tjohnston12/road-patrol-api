@@ -210,6 +210,13 @@ const { arr, sel, num, airtable } = L;
 function cleanDef(d) {
   if (!d || typeof d !== 'object') return null;
   const str = (v, max) => String(v == null ? '' : v).slice(0, max);
+  /* A coordinate outside its own range is not a coordinate. Dropping it leaves
+     the work order located by route + km, which is how the depot finds things
+     anyway; keeping it would drop a map pin in the wrong hemisphere. */
+  const geo = (v, limit) => {
+    const n = num(v);
+    return (n === undefined || !isFinite(n) || Math.abs(n) > limit) ? undefined : n;
+  };
   const seq = Number(d.seq);
   if (!Number.isInteger(seq) || seq < 1 || seq > 9999) return null;
   const out = {
@@ -220,6 +227,19 @@ function cleanDef(d) {
     km:          num(d.km),
     toKm:        num(d.toKm),
     direction:   str(d.direction, 30),
+    // The asset register's id for the culvert/sign/guiderail this is about.
+    // Intake's lookupAsset() fills type, name, route and km from it, and its
+    // duplicate check is keyed on Asset ID + Standard, so an id typed here is
+    // what stops the same culvert being raised twice.
+    assetId:     str(d.assetId, 60),
+    /* The register's name for that asset, as the patroller saw it when they
+       picked it. Denormalised so this report reads without a join — the same
+       thing Media, Inspections and Asset Messages do — and NOT sent on to
+       intake, which resolves the name from the register itself. */
+    assetName:   str(d.assetName, 120),
+    side:        str(d.side, 30),
+    lat:         geo(d.lat, 90),
+    lng:         geo(d.lng, 180),
     description: str(d.description, MAX_DESC).trim(),
     wo:          str(d.wo, 40),
     // an open work order the DMT found near this spot when this one was raised
@@ -235,6 +255,8 @@ function cleanDef(d) {
   };
   if (out.km === undefined) delete out.km;
   if (out.toKm === undefined) delete out.toKm;
+  if (out.lat === undefined) delete out.lat;
+  if (out.lng === undefined) delete out.lng;
   return out;
 }
 function cleanDefs(list) {
@@ -818,6 +840,12 @@ async function raiseDeficiencies(recId, rec, incoming) {
           ...(d.photos.length ? { photoUrls: d.photos } : {}),
           ...(d.toKm !== undefined ? { toKm: d.toKm } : {}),
           ...(d.direction ? { direction: d.direction } : {}),
+          // Intake's own names for these three. assetId drives its asset lookup
+          // and its duplicate check, so it must not be dropped in transit.
+          ...(d.assetId ? { assetId: d.assetId } : {}),
+          ...(d.side ? { side: d.side } : {}),
+          ...(d.lat !== undefined ? { latitude: d.lat } : {}),
+          ...(d.lng !== undefined ? { longitude: d.lng } : {}),
         })) }),
       });
       const j = await r.json().catch(() => ({}));
