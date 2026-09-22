@@ -1,0 +1,85 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Depot",
+            "title": "Depot",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Oromocto"
+                },
+                {
+                    "text": "Bagdad"
+                },
+                {
+                    "text": "River Glade"
+                }
+            ],
+            "type": "select"
+        },
+        {
+            "identifier": "Route",
+            "title": "Route",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Route 1"
+                },
+                {
+                    "text": "Route 2"
+                },
+                {
+                    "text": "Route 7"
+                },
+                {
+                    "text": "Route 8"
+                }
+            ],
+            "type": "select"
+        },
+        {
+            "identifier": "Direction",
+            "title": "Direction",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "EB"
+                },
+                {
+                    "text": "WB"
+                }
+            ],
+            "type": "select"
+        },
+        {
+            "identifier": "From_KM",
+            "title": "From KM",
+            "autoIdentifier": true,
+            "type": "decimal"
+        },
+        {
+            "identifier": "To_KM",
+            "title": "To KM",
+            "autoIdentifier": true,
+            "type": "decimal"
+        },
+        {
+            "identifier": "Description___Comments",
+            "title": "Description / Comments",
+            "autoIdentifier": true,
+            "type": "text",
+            "multi_line": true
+        },
+        {
+            "identifier": "Mail_To",
+            "title": "Mail To",
+            "autoIdentifier": true,
+            "type": "calculated",
+            "calculate_expr": "IF(Depot = \"River Glade\",\"rcormier@mrdc.ca;riverglade@mrdc.ca;oromocto2@mrdc.ca\",IF(Depot = \"Bagda\",\"rcormier@mrdc.ca;riverglade@mrdc.ca;oromocto2@mrdc.ca\",IF(Depot = \"Oromocto\",\"dmelanson@mrdc.ca;oromocto@mrdc.ca\",\"\")))",
+            "type_derived": "text"
+        }
+    ],
+    "title": "Winter - Areas of Concern",
+    "description": "Areas that need to be monitored."
+}

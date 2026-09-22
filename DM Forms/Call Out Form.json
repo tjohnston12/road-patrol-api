@@ -1,0 +1,74 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Division",
+            "title": "Division",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Eastern"
+                },
+                {
+                    "text": "Western"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Name_of_Person_Requesting_Call_Out",
+            "title": "Name of Person Requesting Call Out",
+            "autoIdentifier": true,
+            "type": "text",
+            "required_rule": "always"
+        },
+        {
+            "type": "group",
+            "autoIdentifier": true,
+            "children": [
+                {
+                    "identifier": "Employee_Name",
+                    "title": "Employee Name",
+                    "autoIdentifier": true,
+                    "type": "text",
+                    "required_rule": "always"
+                },
+                {
+                    "identifier": "Reason_for_Call_Out",
+                    "title": "Reason for Call Out",
+                    "autoIdentifier": true,
+                    "type": "text",
+                    "required_rule": "always",
+                    "multi_line": true
+                },
+                {
+                    "identifier": "Time_of_Call_Out",
+                    "title": "Time of Call Out",
+                    "autoIdentifier": true,
+                    "type": "time"
+                }
+            ],
+            "title": "Employee Details",
+            "identifier": "Employee_Details"
+        },
+        {
+            "identifier": "Mail_To",
+            "title": "Mail To",
+            "autoIdentifier": true,
+            "type": "calculated",
+            "calculate_expr": "IF(Division = \"Eastern\",\"rcormier@mrdc.ca\",IF(Division = \"Western\",\"dmelanson@mrdc.ca\",\"\"))",
+            "type_derived": "text"
+        },
+        {
+            "identifier": "Send_a_Copy_to_my_Email_",
+            "title": "Send a Copy to my Email:",
+            "autoIdentifier": true,
+            "type": "email",
+            "validate_format": true,
+            "hint": "you@here.com"
+        }
+    ],
+    "title": "Call Out Form",
+    "description": "When an MRDC Employee is called in."
+}

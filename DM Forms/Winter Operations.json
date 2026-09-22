@@ -1,0 +1,209 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Date",
+            "title": "Date",
+            "autoIdentifier": true,
+            "type": "date",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Depot",
+            "title": "Depot",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Oromocto"
+                },
+                {
+                    "text": "Bagdad"
+                },
+                {
+                    "text": "River Glade"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Patroller",
+            "title": "Patroller",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Jeremy MacDonald"
+                },
+                {
+                    "text": "Tom Gibson"
+                },
+                {
+                    "text": "Stephen Palmer"
+                },
+                {
+                    "text": "Mark Palmer"
+                },
+                {
+                    "text": "Peter Fenety"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always",
+            "options_resource": "e050c650-0c03-0139-ca6c-12297bc833f9",
+            "options_table": "e012cbb0-0c03-0139-ca6c-12297bc833f9",
+            "options_text_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9",
+            "options_identifier_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9"
+        },
+        {
+            "identifier": "Time_Winter_Ops_Deployed",
+            "title": "Time Winter Ops Deployed",
+            "autoIdentifier": true,
+            "type": "time",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Select_Routes_Equipment_Deployed_On",
+            "title": "Select Routes Equipment Deployed On",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Mazerolle"
+                },
+                {
+                    "text": "Oromocto West"
+                },
+                {
+                    "text": "Oromocto East"
+                },
+                {
+                    "text": "Oromocto Route 7"
+                },
+                {
+                    "text": "Bagdad West"
+                },
+                {
+                    "text": "Bagdad East"
+                },
+                {
+                    "text": "River Glade West"
+                },
+                {
+                    "text": "River Glade East"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Type_of_Operations",
+            "title": "Type of Operations",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "DLA"
+                },
+                {
+                    "text": "Spreading"
+                },
+                {
+                    "text": "Plowing"
+                },
+                {
+                    "text": "Snow Removal / Blowing"
+                },
+                {
+                    "text": "Drainage Prep"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always",
+            "multiple": true,
+            "initialAnswer": ""
+        },
+        {
+            "identifier": "Materials_Used",
+            "title": "Materials Used",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "None"
+                },
+                {
+                    "text": "Salt Brine"
+                },
+                {
+                    "text": "Hot Mix"
+                },
+                {
+                    "text": "Salt"
+                },
+                {
+                    "text": "Sand"
+                },
+                {
+                    "text": "Calcium Chloride"
+                }
+            ],
+            "type": "select",
+            "multiple": true,
+            "visible_rule": "when",
+            "initialAnswer": "",
+            "visible_expr": "OR(CONTAINS(Type_of_Operations,\"Spreading\"),CONTAINS(Type_of_Operations,\"DLA\"))",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Spread_Rates__kg_per_2_lane_km_",
+            "title": "Spread Rates (kg per 2 lane km)",
+            "autoIdentifier": true,
+            "type": "integer",
+            "required_rule": "always",
+            "visible_rule": "when",
+            "visible_expr": "OR(CONTAINS(Type_of_Operations,\"Spreading\"),CONTAINS(Type_of_Operations,\"DLA\"))"
+        },
+        {
+            "identifier": "Spreading_Details",
+            "title": "Spreading Details ",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Spot"
+                },
+                {
+                    "text": "Driving Lane"
+                },
+                {
+                    "text": "Passing Lane"
+                },
+                {
+                    "text": "Ramps"
+                },
+                {
+                    "text": "Structures"
+                }
+            ],
+            "type": "select",
+            "multiple": true,
+            "visible_rule": "when",
+            "visible_expr": "CONTAINS(Type_of_Operations,\"Spreading\")",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Notes___Spread_Rates_per_Route",
+            "title": "Notes / Spread Rates per Route",
+            "autoIdentifier": true,
+            "type": "text",
+            "multi_line": true,
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Mail_To",
+            "title": "Mail To",
+            "autoIdentifier": true,
+            "type": "calculated",
+            "calculate_expr": "IF(Depot = \"River Glade\",\"rcormier@mrdc.ca\",IF(Depot = \"Oromocto\",\"dmelanson@mrdc.ca\",IF(Depot = \"Bagdad\",\"rcormier@mrdc.ca\",\"\")))",
+            "type_derived": "text"
+        }
+    ],
+    "title": "Winter Operations",
+    "description": "Enter each SNIC event as it occurs."
+}

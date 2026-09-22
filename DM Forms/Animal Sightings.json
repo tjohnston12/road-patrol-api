@@ -1,0 +1,157 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Patroller",
+            "title": "Patroller ",
+            "autoIdentifier": true,
+            "options": [],
+            "type": "select",
+            "required_rule": "always",
+            "options_resource": "e050c650-0c03-0139-ca6c-12297bc833f9",
+            "options_table": "e012cbb0-0c03-0139-ca6c-12297bc833f9",
+            "options_text_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9",
+            "options_identifier_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9"
+        },
+        {
+            "identifier": "Date",
+            "title": "Date",
+            "autoIdentifier": true,
+            "type": "date",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Division",
+            "title": "Division",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Eastern"
+                },
+                {
+                    "text": "Western"
+                }
+            ],
+            "type": "select",
+            "hint": "",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Route",
+            "title": "Route",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Route 1"
+                },
+                {
+                    "text": "Route 2"
+                },
+                {
+                    "text": "Route 7"
+                },
+                {
+                    "text": "Route 8"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "From_KM",
+            "title": "From KM",
+            "autoIdentifier": true,
+            "type": "decimal",
+            "required_rule": "always",
+            "validate_expr": "AND(From_KM > 0,From_KM < 455)"
+        },
+        {
+            "identifier": "To_KM",
+            "title": "To KM",
+            "autoIdentifier": true,
+            "type": "integer"
+        },
+        {
+            "identifier": "Direction",
+            "title": "Direction",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "East Bound"
+                },
+                {
+                    "text": "West Bound"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Ramp",
+            "title": "Ramp",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "ON Ramp"
+                },
+                {
+                    "text": "OFF Ramp"
+                }
+            ],
+            "type": "select"
+        },
+        {
+            "identifier": "Type_of_Animal",
+            "title": "Type of Animal",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Bear"
+                },
+                {
+                    "text": "Moose"
+                },
+                {
+                    "text": "Deer"
+                },
+                {
+                    "text": "Lynx"
+                },
+                {
+                    "text": "Cougar"
+                },
+                {
+                    "text": "Owl"
+                },
+                {
+                    "text": "Pine Martin"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Number_of_Animals",
+            "title": "Number of Animals",
+            "autoIdentifier": true,
+            "type": "integer",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Behind_Wildlife_Fence_",
+            "title": "Behind Wildlife Fence?",
+            "autoIdentifier": true,
+            "type": "boolean",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "GPS_Location",
+            "title": "GPS Location",
+            "autoIdentifier": true,
+            "type": "location",
+            "hint": "Click if at site of sighting."
+        }
+    ],
+    "title": "Animal Sightings",
+    "description": "Animals sighted on the MRDC Facility."
+}

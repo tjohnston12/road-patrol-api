@@ -1,0 +1,82 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Patroller_Name",
+            "title": "Patroller Name",
+            "autoIdentifier": true,
+            "options": [],
+            "type": "select",
+            "options_resource": "e050c650-0c03-0139-ca6c-12297bc833f9",
+            "options_table": "e012cbb0-0c03-0139-ca6c-12297bc833f9",
+            "options_text_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9",
+            "options_identifier_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9"
+        },
+        {
+            "identifier": "Date",
+            "title": "Date",
+            "autoIdentifier": true,
+            "type": "date",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Time_No_Travel_Advisory_was_Lifted",
+            "title": "Time No Travel Advisory was Lifted",
+            "autoIdentifier": true,
+            "type": "time",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Route",
+            "title": "Route",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Route 1"
+                },
+                {
+                    "text": "Route 2"
+                },
+                {
+                    "text": "Route 7"
+                },
+                {
+                    "text": "Route 8"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always",
+            "multiple": true
+        },
+        {
+            "identifier": "From_Exit__",
+            "title": "From Exit #",
+            "autoIdentifier": true,
+            "type": "integer",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "To_Exit__",
+            "title": "To Exit #",
+            "autoIdentifier": true,
+            "type": "integer",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "From_KM",
+            "title": "From KM",
+            "autoIdentifier": true,
+            "type": "decimal",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "To_KM",
+            "title": "To KM",
+            "autoIdentifier": true,
+            "type": "decimal",
+            "required_rule": "always"
+        }
+    ],
+    "title": "Winter - No Travel Advisory - LIFTED",
+    "description": "No Travel Advisory lifted."
+}

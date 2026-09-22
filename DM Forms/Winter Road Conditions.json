@@ -1,0 +1,156 @@
+{
+    "type": "root",
+    "children": [
+        {
+            "identifier": "Date",
+            "title": "Date",
+            "autoIdentifier": true,
+            "type": "date"
+        },
+        {
+            "identifier": "Patroller",
+            "title": "Patroller",
+            "autoIdentifier": true,
+            "options": [],
+            "type": "select",
+            "required_rule": "always",
+            "options_resource": "e050c650-0c03-0139-ca6c-12297bc833f9",
+            "options_table": "e012cbb0-0c03-0139-ca6c-12297bc833f9",
+            "options_text_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9",
+            "options_identifier_column": "e012ccf0-0c03-0139-ca6c-12297bc833f9"
+        },
+        {
+            "identifier": "Time_of_Observation",
+            "title": "Time of Observation",
+            "autoIdentifier": true,
+            "type": "time"
+        },
+        {
+            "identifier": "Depot",
+            "title": "Depot",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Oromocto"
+                },
+                {
+                    "text": "Bagdad"
+                },
+                {
+                    "text": "River Glade"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always"
+        },
+        {
+            "identifier": "Western_Division_Plow_Routes",
+            "title": "Western Division Plow Routes",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Oromocto East"
+                },
+                {
+                    "text": "Oromocto West"
+                },
+                {
+                    "text": "Mazerolle"
+                },
+                {
+                    "text": "Route 7"
+                }
+            ],
+            "type": "select",
+            "visible_rule": "when",
+            "required_rule": "always",
+            "visible_expr": "Depot = \"Oromocto\""
+        },
+        {
+            "identifier": "Eastern_Division_Plow_Routes",
+            "title": "Eastern Division Plow Routes",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Bagdad East"
+                },
+                {
+                    "text": "Bagdad West"
+                },
+                {
+                    "text": "River Glade East"
+                },
+                {
+                    "text": "River Glade West"
+                }
+            ],
+            "type": "select",
+            "visible_rule": "when",
+            "required_rule": "always",
+            "visible_expr": "OR(Depot = \"Bagdad\",Depot = \"River Glade\")"
+        },
+        {
+            "identifier": "Road_Conditions",
+            "title": "Road Conditions",
+            "autoIdentifier": true,
+            "options": [
+                {
+                    "text": "Bare Full Width"
+                },
+                {
+                    "text": "Bare Driving Lanes"
+                },
+                {
+                    "text": "Bare Center Skip"
+                },
+                {
+                    "text": "Bare Wheel Tracks"
+                },
+                {
+                    "text": "Light Snow Covered"
+                },
+                {
+                    "text": "Snow Covered"
+                },
+                {
+                    "text": "Snow Accumulating"
+                },
+                {
+                    "text": "Snow Packed"
+                },
+                {
+                    "text": "Slippery"
+                },
+                {
+                    "text": "Icy Spots"
+                },
+                {
+                    "text": "Slushy"
+                },
+                {
+                    "text": "Drifting Snow"
+                }
+            ],
+            "type": "select",
+            "required_rule": "always",
+            "multiple": true
+        },
+        {
+            "identifier": "Comments",
+            "title": "Comments",
+            "autoIdentifier": true,
+            "type": "text",
+            "multi_line": true
+        },
+        {
+            "identifier": "Mail_To",
+            "title": "Mail To",
+            "autoIdentifier": true,
+            "type": "calculated",
+            "calculate_expr": "IF(Depot = \"River Glade\",\"rcormier@mrdc.ca\",IF(Depot = \"Oromocto\",\"dmelanson@mrdc.ca\",IF(Depot = \"Bagdad\",\"rcormier@mrdc.ca\",\"\")))",
+            "type_derived": "text"
+        }
+    ],
+    "title": "Winter Road Conditions",
+    "description": "To capture the road conditions on the Facility."
+}
