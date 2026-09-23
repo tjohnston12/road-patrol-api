@@ -3,9 +3,13 @@
 // Airtable fetch, CORS, the SSO header identity check, and the live patroller
 // list. Kept dependency-free and CommonJS like every other MRDC API repo.
 //
-// Identity note: the x-user-* / x-app-role headers come from the SSO session via
-// htra-auth.js. They close the in-app path but are spoofable in a direct API
-// call — signed tokens are the real fix (tracked in the README).
+// Identity note: identity is resolved SERVER-SIDE in ./_auth.js, from the
+// shared-SSO cookie. It does NOT live here any more. Until 2026-09-23 this file
+// exported isAdmin() and callerName() built from the x-user-* / x-app-role
+// request headers, with a note saying they were "spoofable in a direct API
+// call" — which they were: nothing looked at the cookie, so an anonymous
+// request got a 200 and every row back. Both helpers were deleted rather than
+// left in place, so nothing can quietly go back to trusting a header.
 
 const PAT = process.env.AIRTABLE_PAT;
 
@@ -62,16 +66,16 @@ function cors(req, res) {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  /* ⚠️ x-user-* stays in the allow-list even though the server no longer reads
+     any of it. All three patrol pages still attach those headers in
+     authHeaders(); dropping them here fails the preflight and every request
+     with it. They can come out of this list once the pages stop sending them —
+     page first, then here, never the other way round. */
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-role, x-app-role, x-user-name, x-user-id');
   if (req.method === 'OPTIONS') { res.status(200).end(); return true; }
   return false;
 }
 
-const ADMIN_ROLES = ['Admin', 'Manager'];
-const isAdmin = req =>
-  ADMIN_ROLES.includes(String(req.headers['x-app-role'] || '')) ||
-  ['Owner', 'Admin'].includes(String(req.headers['x-user-role'] || ''));
-const callerName  = req => String(req.headers['x-user-name'] || '');
 const parseBody   = req => (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}));
 
 // Every employee in the directory, shaped for the apps. Returns ALL of them —
@@ -230,6 +234,6 @@ async function sendMail({ to, subject, html, from }) {
 module.exports = {
   PAT, EMP_BASE, EMP_TABLE, EF, PATROL_TITLES,
   arr, sel, num, esc,
-  airtable, cors, corsOrigin, isAdmin, callerName, parseBody,
+  airtable, cors, corsOrigin, parseBody,
   getEmployees, getPatrollers, uploadAttachment, sendMail, sendMailDetailed,
 };

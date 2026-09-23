@@ -23,6 +23,7 @@
 //      app still works — the notification is recorded and simply not emailed.
 
 const L = require('./_lib');
+const { requireCaller } = require('./_auth');
 
 const BASE  = process.env.MVA_BASE  || 'appMKaiabPAPx3JaV';
 const TABLE = process.env.MVA_TABLE || 'tblFnoVfyA9nSEOwk';
@@ -271,7 +272,10 @@ async function fetchRows({ mine, who }) {
     qs.set('returnFieldsByFieldId', 'true');
     qs.set('sort[0][field]', F.date);
     qs.set('sort[0][direction]', 'desc');
-    if (mine && who) {
+    /* ⚠️ Same fail-open as patrol.js fetchRows — see the note there. `mine`
+       with no name must return nothing, not everything. */
+    if (mine) {
+      if (!who) return [];
       const safe = String(who).toLowerCase().replace(/'/g, "\\'");
       qs.set('filterByFormula', `OR(LOWER({Patroller}&'')='${safe}',LOWER({Submitted By}&'')='${safe}')`);
     }
@@ -287,6 +291,10 @@ module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
   if (!L.PAT) return res.status(500).json({ error: 'Server not configured (AIRTABLE_PAT missing)' });
 
+  // ⚠️ Identity BEFORE the try — see the note in patrol.js.
+  const caller = await requireCaller(req, res);
+  if (!caller) return;
+
   try {
     if (req.method === 'GET') {
       if (String(req.query?.meta || '') === '1') {
@@ -297,8 +305,8 @@ module.exports = async function handler(req, res) {
         const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`);
         return res.status(200).json({ row: shape(rec) });
       }
-      const mine = String(req.query?.mine || '') === '1' || !L.isAdmin(req);
-      const recs = await fetchRows({ mine, who: L.callerName(req) });
+      const mine = String(req.query?.mine || '') === '1' || !caller.isAdmin;
+      const recs = await fetchRows({ mine, who: caller.name });
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ rows: recs.map(shape), scope: mine ? 'mine' : 'all' });
     }
@@ -330,7 +338,7 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'A spill requires the Department of Environment to be called — confirm before submitting.' });
 
       const mvaNo = await uniqueMvaNo(buildMvaNo(body.date, body.km, body.direction));
-      const fields = toFields({ ...body, submittedBy: body.submittedBy || L.callerName(req) }, mvaNo);
+      const fields = toFields({ ...body, submittedBy: body.submittedBy || caller.name }, mvaNo);
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
         method: 'POST', body: JSON.stringify({ fields }),
       });
@@ -360,7 +368,7 @@ module.exports = async function handler(req, res) {
       // changes are a supervisor action.
       if (body.dmtWo !== undefined) f[F.dmtWo] = body.dmtWo;
       if (body.status !== undefined) {
-        if (!L.isAdmin(req)) return res.status(403).json({ error: 'Only supervisors and administrators can change the status.' });
+        if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can change the status.' });
         if (CHOICES.statuses.includes(body.status)) f[F.status] = body.status;
       }
       if (!Object.keys(f).length) return res.status(400).json({ error: 'Nothing to update' });

@@ -37,6 +37,7 @@
 //      AIRTABLE_BASE, PATROL_TABLE.
 
 const L = require('./_lib');
+const { requireCaller } = require('./_auth');
 
 const BASE  = process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe';
 const TABLE = process.env.PATROL_TABLE  || 'tblosu2dzKTwhuHnf';
@@ -448,7 +449,13 @@ async function fetchRows({ mine, who }) {
     qs.set('returnFieldsByFieldId', 'true');
     qs.set('sort[0][field]', F.shiftDate);
     qs.set('sort[0][direction]', 'desc');
-    if (mine && who) {
+    /* ⚠️ FAILS OPEN IF THIS IS WRITTEN AS `if (mine && who)`. That is what it
+       said until 2026-09-23: a caller with no name skipped the filter entirely
+       and got EVERY report, while a named non-admin correctly got only their
+       own. An anonymous request was the one case that produced the widest
+       result. A scope of "mine" with nobody to be must return nothing. */
+    if (mine) {
+      if (!who) return [];
       const safe = String(who).toLowerCase().replace(/'/g, "\\'");
       qs.set('filterByFormula', `OR(LOWER({Patroller}&'')='${safe}',LOWER({Submitted By}&'')='${safe}')`);
     }
@@ -582,12 +589,16 @@ async function findOpenReport(who) {
   return (j.records || [])[0] || null;
 }
 
-// A patroller owns a report while it is theirs and still in progress. Ownership
-// is by name, which is as strong as the x-user-* headers allow — the same
-// caveat that applies everywhere in this API.
-function ownsRow(req, rec) {
+/* A patroller owns a report while it is theirs and still in progress.
+   Ownership is matched by name — but the name now comes from the validated
+   session rather than from x-user-name, so it is no longer something the
+   caller can simply assert. (Matching on the employee record id would be
+   stronger still: names in Airtable are renameable, which §2b of the working
+   agreement warns about. That is a data migration on the Patroller and
+   Submitted By fields, not part of closing this hole.) */
+function ownsRow(caller, rec) {
   const f = rec.fields || {};
-  const me = L.callerName(req).trim().toLowerCase();
+  const me = String(caller.name || '').trim().toLowerCase();
   if (!me) return false;
   return String(f[F.submittedBy] || '').trim().toLowerCase() === me ||
          String(f[F.patroller]   || '').trim().toLowerCase() === me;
@@ -618,6 +629,13 @@ module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
   if (!L.PAT) return res.status(500).json({ error: 'Server not configured (AIRTABLE_PAT missing)' });
 
+  /* ⚠️ Identity BEFORE the try. Inside it, requireCaller's 401 would be caught
+     by the handler's own catch and returned as a 500 — the failure mode the
+     September auth audit called out. Every route below needs a caller: the
+     meta route hands back the patroller picker, which is directory data. */
+  const caller = await requireCaller(req, res);
+  if (!caller) return;
+
   try {
     if (req.method === 'GET') {
       if (String(req.query?.meta || '') === '1') {
@@ -631,7 +649,7 @@ module.exports = async function handler(req, res) {
       // The caller's currently-open shift report, so the app can offer to resume
       // it instead of starting a second one.
       if (String(req.query?.open || '') === '1') {
-        const rec = await findOpenReport(L.callerName(req));
+        const rec = await findOpenReport(caller.name);
         return res.status(200).json({ row: rec ? shape(rec) : null });
       }
       if (req.query?.check === 'shift') {
@@ -640,8 +658,8 @@ module.exports = async function handler(req, res) {
         });
         return res.status(200).json({ exists: !!dup, row: dup ? shape(dup) : null });
       }
-      const mine = String(req.query?.mine || '') === '1' || !L.isAdmin(req);
-      const recs = await fetchRows({ mine, who: L.callerName(req) });
+      const mine = String(req.query?.mine || '') === '1' || !caller.isAdmin;
+      const recs = await fetchRows({ mine, who: caller.name });
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ rows: recs.map(shape), scope: mine ? 'mine' : 'all' });
     }
@@ -657,14 +675,14 @@ module.exports = async function handler(req, res) {
       if (!isDraft) {
         const problem = validateComplete(body);
         if (problem) return res.status(400).json({ error: problem });
-      } else if (!body.patroller && !L.callerName(req)) {
+      } else if (!body.patroller && !caller.name) {
         return res.status(400).json({ error: 'Patroller is required' });
       }
 
       const existing = await findByReportId(body.reportId);
       if (existing) return res.status(200).json({ row: shape(existing), duplicate: true });
 
-      const fields = toFields({ ...body, submittedBy: body.submittedBy || L.callerName(req) });
+      const fields = toFields({ ...body, submittedBy: body.submittedBy || caller.name });
       fields[F.status] = isDraft ? 'In progress' : 'Submitted';
       if (!isDraft) fields[F.submittedAt] = new Date().toISOString();
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
@@ -686,8 +704,8 @@ module.exports = async function handler(req, res) {
 
       // Supervisor review — status/notes on an already-submitted report.
       if (body.review === true) {
-        if (!L.isAdmin(req)) return res.status(403).json({ error: 'Only supervisors and administrators can review reports.' });
-        const f = { [F.reviewedBy]: L.callerName(req), [F.reviewedAt]: new Date().toISOString() };
+        if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can review reports.' });
+        const f = { [F.reviewedBy]: caller.name, [F.reviewedAt]: new Date().toISOString() };
         if (CHOICES.reviewStatuses.includes(body.status)) f[F.status] = body.status;
         if (body.reviewNotes !== undefined) f[F.reviewNotes] = body.reviewNotes;
         const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
@@ -699,7 +717,7 @@ module.exports = async function handler(req, res) {
       // Otherwise this is the patroller working on their own open report.
       if (current !== 'In progress')
         return res.status(409).json({ error: 'This report has already been submitted and can no longer be edited.' });
-      if (!ownsRow(req, rec) && !L.isAdmin(req))
+      if (!ownsRow(caller, rec) && !caller.isAdmin)
         return res.status(403).json({ error: 'This report belongs to another patroller.' });
 
       /* The flush from section 7 of the report: raise these and nothing else.
@@ -739,7 +757,7 @@ module.exports = async function handler(req, res) {
          of the same rows straight over the work order numbers just recorded. */
       const fields = toFields({ ...body,
         ...(mergedDefs ? { deficiencyRows: mergedDefs } : {}),
-        submittedBy: rec.fields?.[F.submittedBy] || L.callerName(req) });
+        submittedBy: rec.fields?.[F.submittedBy] || caller.name });
       if (submitting) {
         fields[F.status] = 'Submitted';
         fields[F.submittedAt] = new Date().toISOString();
