@@ -105,6 +105,11 @@ const F = {
    out on the next save, the next `online`, or at submit. The report is the
    contractual record and it is filed either way. */
 const DMT_INTAKE_URL = process.env.DMT_INTAKE_URL || 'https://dmt.mrdc-htra.com/api/intake';
+/* The DMT's /api/intake requires a caller since 2026-09-23. This runs server
+   side with no cookie, so it presents the DMT's service key. ⚠️ Set
+   DMT_INTAKE_SECRET on road-patrol-api to the DMT's INTAKE_SECRET, or every
+   roadside deficiency stops reaching the DMT with a 401. */
+const DMT_INTAKE_SECRET = (process.env.DMT_INTAKE_SECRET || '').trim();
 const DMT_TIMEOUT_MS = Number(process.env.DMT_TIMEOUT_MS || 12000);
 const MAX_DEFS = 50;              // a shift that found 50 has a different problem
 const MAX_DESC = 2000;
@@ -841,7 +846,7 @@ async function raiseDeficiencies(recId, rec, incoming) {
     try {
       const r = await fetch(DMT_INTAKE_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-intake-key': DMT_INTAKE_SECRET },
         signal: ctl.signal,
         body: JSON.stringify({ deficiencies: send.map(d => ({
           // Derived from the report, so a retry hits intake's existingWO() and
