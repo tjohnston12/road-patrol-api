@@ -98,9 +98,10 @@ const row = (o = {}) => ({ seq: 1, standard: 'OMM 101', finding: 'Potholes', rou
   /* This JSON comes from a browser and lands on a contractual record, so the
      shape is a whitelist, not a filter. */
   const c = T.cleanDef({ ...row(), evil: '<script>', wo: 'WO-1', Status: 'Closed', __proto__: { x: 1 } });
-  const ALLOWED = ['assetId', 'assetName', 'description', 'direction', 'dup', 'finding', 'km',
-                   'lat', 'lng', 'photos', 'photosSent', 'route', 'seq', 'side', 'standard',
-                   'toKm', 'wo'];
+  // 'division' and 'divTouched' added deliberately 2026-10-01 — the section 7 Division box
+  const ALLOWED = ['assetId', 'assetName', 'description', 'direction', 'divTouched', 'division', 'dup',
+                   'finding', 'km', 'lat', 'lng', 'photos', 'photosSent', 'route', 'seq', 'side',
+                   'standard', 'toKm', 'wo'];
   eq('unknown keys do not survive', Object.keys(c).filter(k => ALLOWED.indexOf(k) < 0), []);
   ok('nothing the client invented is there', !('evil' in c) && !('Status' in c) && !('x' in c),
      Object.keys(c).join(','));
@@ -322,6 +323,22 @@ const recOf = (defsJson, extra = {}) => ({ id: 'recRPT0000000001', fields: {
   eq('and the numbers, one per line', wrote[T.F.defsWos], 'WO-2026-900\nWO-2026-901');
   ok('and the rows carry their numbers now',
      T.parseDefs(wrote[T.F.defsJson]).every(d => !!d.wo), wrote[T.F.defsJson]);
+}
+/* ── the Division box (2026-10-01): sent to intake as override.division ── */
+{
+  eq('a Western division is kept', T.cleanDef(row({ division: 'Western' })).division, 'Western');
+  eq('an Eastern division is kept', T.cleanDef(row({ division: 'Eastern' })).division, 'Eastern');
+  for (const bad of ['Eastern & Western', 'western', 'Head Office', ' Western', '<b>', 7])
+    eq(`"${bad}" is not a division`, T.cleanDef(row({ division: bad })).division, '');
+  eq('divTouched is a boolean', T.cleanDef(row({ divTouched: 'yes' })).divTouched, true);
+
+  airtableCalls = []; let seen = stubIntake();
+  await T.raiseDeficiencies('recRPT0000000001', recOf(null),
+    [row({ seq: 1, division: 'Eastern' }), row({ seq: 2, finding: 'Water Ponding' })]);
+  const sent = seen[0].body.deficiencies;
+  eq('the patroller\'s division goes to intake as override.division', sent[0].override, { division: 'Eastern' });
+  ok('a row with no division sends no override, so intake\'s km rule decides as before', !('override' in sent[1]), JSON.stringify(sent[1]));
+  ok('a row from an older tablet (no division) is still raised', sent.length === 2);
 }
 {
   airtableCalls = []; const seen = stubIntake();
