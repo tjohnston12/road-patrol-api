@@ -656,6 +656,14 @@ module.exports = async function handler(req, res) {
       const id = req.query?.id;
       if (id) {
         const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`);
+        /* One report, by id: a supervisor/admin may read any; anyone else only
+           their own — the same rule the list already applies (scope "mine").
+           Until 2026-10-01 this route had no ownership check, so a signed-in
+           patroller could read a colleague's report by guessing its record id.
+           404, not 403: someone else's report is, to them, not there. */
+        if (!caller.isAdmin && !ownsRow(caller, rec))
+          return res.status(404).json({ error: 'Report not found' });
+        res.setHeader('Cache-Control', 'no-store');
         return res.status(200).json({ row: shape(rec) });
       }
       // The caller's currently-open shift report, so the app can offer to resume
