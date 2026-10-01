@@ -244,6 +244,13 @@ function cleanDef(d) {
        intake, which resolves the name from the register itself. */
     assetName:   str(d.assetName, 120),
     side:        str(d.side, 30),
+    /* The division the patroller confirmed (or accepted as defaulted) on the
+       form — the same Division box the DMT's own form has. Only a real one is
+       kept; anything else is blank and intake's km rule decides, as before. A
+       row from a tablet still running the older page has none, and is raised
+       exactly as it always was. */
+    division:    (d.division === 'Western' || d.division === 'Eastern') ? d.division : '',
+    divTouched:  !!d.divTouched,
     lat:         geo(d.lat, 90),
     lng:         geo(d.lng, 180),
     description: str(d.description, MAX_DESC).trim(),
@@ -867,6 +874,8 @@ async function raiseDeficiencies(recId, rec, incoming) {
           // and its duplicate check, so it must not be dropped in transit.
           ...(d.assetId ? { assetId: d.assetId } : {}),
           ...(d.side ? { side: d.side } : {}),
+          // intake takes a reporter-confirmed division as override.division
+          ...(d.division ? { override: { division: d.division } } : {}),
           ...(d.lat !== undefined ? { latitude: d.lat } : {}),
           ...(d.lng !== undefined ? { longitude: d.lng } : {}),
         })) }),
