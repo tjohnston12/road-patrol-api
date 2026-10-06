@@ -172,6 +172,24 @@ async function uniqueMvaNo(base) {
   throw new Error('Could not allocate a unique MVA number');
 }
 
+// The patroller's email from the Employees directory (exact name, any status —
+// a winter patroller can be Inactive off-season). '' when not found.
+async function directoryEmail(name) {
+  const want = String(name || '').trim().toLowerCase();
+  if (!want) return '';
+  const p = (await L.getEmployees()).find(e => String(e.name || '').trim().toLowerCase() === want);
+  return (p && p.email) || '';
+}
+// The distribution list plus the patroller, once each.
+function recipients(list, extra) {
+  const out = [], seen = new Set();
+  for (const a of String(list || '').split(',').concat(extra ? [extra] : [])) {
+    const t = a.trim(); if (!t || seen.has(t.toLowerCase())) continue;
+    seen.add(t.toLowerCase()); out.push(t);
+  }
+  return out;
+}
+
 function toFields(b, mvaNo) {
   const f = {};
   const pick = (list, v) => (list.includes(v) ? v : undefined);
@@ -258,9 +276,22 @@ function notificationHtml(row) {
   ${row.arRequired ? `<p style="margin-top:14px;color:#A32D2D"><b>An accident report is required for this MVA.</b></p>` : ''}
   ${row.invRequired ? `<p style="margin-top:6px;color:#A32D2D"><b>Hit &amp; run — an investigation report is required.</b></p>` : ''}
   ${row.damages ? `<p style="margin-top:6px;color:#B7791F"><b>Facility damage must be raised in the DMT as a work order.</b></p>` : ''}
+  ${row.arRequired ? folderHtml(row) : ''}
   <p style="margin-top:18px;font-size:13px"><a href="${esc(APP_URL)}" style="color:#15616D">Open the Road Patrol app</a></p>
   <p style="margin-top:14px;font-size:12px;color:#6B6B6B">Filed by ${esc(row.submittedBy || row.patroller)} via the MRDC Road Patrol app.</p>
 </div>`;
+}
+
+// The accident file folder — what the patroller builds so a claim can be filed.
+// The items are the Accident Claim Checklist (3.1.2 Accident Claim Work Summary).
+const FOLDER = ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages',
+  'Photos of the completed repairs', 'Traffic control sheets', 'Copy of the time sheets',
+  'Accident Claim Checklist — signed by the patroller and the Area Manager'];
+function folderHtml(row) {
+  return `<div style="margin-top:16px;border:1px solid #DDD9D0;border-radius:8px;padding:12px 16px">
+    <div style="font-weight:600;margin-bottom:6px">Accident file folder — ${esc(row.mvaNo)}</div>
+    <div style="font-size:13px;color:#6B6B6B;margin-bottom:6px">${esc(row.patroller || 'The patroller')} builds and completes the folder for this MVA:</div>
+    <ul style="margin:0;padding-left:20px">${FOLDER.map(i => `<li style="padding:2px 0">${esc(i)}</li>`).join('')}</ul></div>`;
 }
 
 async function fetchRows({ mine, who }) {
@@ -338,23 +369,31 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'A spill requires the Department of Environment to be called — confirm before submitting.' });
 
       const mvaNo = await uniqueMvaNo(buildMvaNo(body.date, body.km, body.direction));
-      const fields = toFields({ ...body, submittedBy: body.submittedBy || caller.name }, mvaNo);
+      // The patroller's address comes from the Employees directory by name — never
+      // from the request. They get the notification too: they build the accident
+      // file folder from it (Troy, 2026-10-06).
+      const patrollerEmail = await directoryEmail(body.patroller);
+      const fields = toFields({ ...body, patrollerEmail, submittedBy: body.submittedBy || caller.name }, mvaNo);
+      // ⚠️ returnFieldsByFieldId: shape() reads by field ID. Without it Airtable
+      // answers by field NAME, every value reads blank, and the first live MVA
+      // (2026-10-06) went out with the subject "MVA" and an empty body.
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
-        method: 'POST', body: JSON.stringify({ fields }),
+        method: 'POST', body: JSON.stringify({ fields, returnFieldsByFieldId: true }),
       });
       let row = shape(created);
 
       // Email the distribution list. Best-effort: a mail failure must never lose
       // the notification the patroller just filed.
       const sentTo = await L.sendMail({
-        to: NOTIFY_TO,
+        to: recipients(NOTIFY_TO, row.patrollerEmail),
         subject: `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`,
         html: notificationHtml(row),
       });
       if (sentTo.length) {
         const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(created.id)}`, {
           method: 'PATCH',
-          body: JSON.stringify({ fields: { [F.notifiedAt]: new Date().toISOString(), [F.notified]: sentTo.join(', ') } }),
+          body: JSON.stringify({ returnFieldsByFieldId: true,
+            fields: { [F.notifiedAt]: new Date().toISOString(), [F.notified]: sentTo.join(', ') } }),
         });
         row = shape(upd);
       }
@@ -373,7 +412,7 @@ module.exports = async function handler(req, res) {
       }
       if (!Object.keys(f).length) return res.status(400).json({ error: 'Nothing to update' });
       const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
-        method: 'PATCH', body: JSON.stringify({ fields: f }),
+        method: 'PATCH', body: JSON.stringify({ fields: f, returnFieldsByFieldId: true }),
       });
       return res.status(200).json({ row: shape(updated) });
     }
