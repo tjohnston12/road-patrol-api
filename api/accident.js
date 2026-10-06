@@ -53,6 +53,7 @@ const A = {
   spill: 'fldwz2MySSdbCLyb5', fire: 'flda1eMrxZNUVoeWN', doeContacted: 'fldgjigRvD4JRm0c0',
   doeDetails: 'fldzlgK3DQtsVmWlu', fireDetails: 'fldXVTOjjwkx8ASa1',
   injuries3: 'fldWdeQqgXx7ycBmo', fatality3: 'fld0XMlrjJ5atFqoH',
+  hasTrailer: 'fldnwBKWP05K43yPx', trailerPlatePhoto: 'fldWb06wd1RE8uuiq', trailerPlate: 'fldj44y9MXHrp42Nz',
 };
 const CHOICES = {
   divisions: ['Eastern', 'Western'], routes: ['Route 2', 'Route 7', 'Other'], directions: ['EB', 'WB', 'NB', 'SB'],
@@ -62,10 +63,10 @@ const CHOICES = {
 // Free-text fields: key → field (and a length cap).
 const TEXT = ['truck', 'tcEmployee', 'tcUnit', 'tcMoreText', 'roadCond', 'weather', 'damages', 'itemsText', 'driver', 'owner',
   'trucking', 'licence', 'vehicle', 'plate', 'insurer', 'policy', 'dmtWo', 'patroller', 'hitRunDetails', 'officer', 'policeFile',
-  'towing', 'doeDetails', 'fireDetails'];
-const BOOL = ['tcByMrdc', 'tcMoreNeeded', 'driverIsOwner', 'dmtOpened', 'hitRun', 'ambulance', 'police', 'spill', 'fire', 'doeContacted'];
+  'towing', 'doeDetails', 'fireDetails', 'trailerPlate'];
+const BOOL = ['hasTrailer', 'tcByMrdc', 'tcMoreNeeded', 'driverIsOwner', 'dmtOpened', 'hitRun', 'ambulance', 'police', 'spill', 'fire', 'doeContacted'];
 const TIMES = ['timeOfAccident', 'arrived', 'left', 'tcCalled', 'tcArrived', 'tcLeft'];
-const PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', insurance: 'insurancePhoto', accident: 'accidentPhotos', repair: 'repairPhotos' };
+const PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', trailer: 'trailerPlatePhoto', insurance: 'insurancePhoto', accident: 'accidentPhotos', repair: 'repairPhotos' };
 // Submit needs these (the DeviceMagic form's required set, plus the two Yes/No/Unknown).
 const REQUIRED = [['patroller', 'Patroller'], ['division', 'Division'], ['timeOfAccident', 'Time of accident'], ['route', 'Route'],
   ['km', 'KM location'], ['direction', 'Direction'], ['vehicles', 'Number of vehicles'], ['injuries', 'Injuries'],
@@ -128,7 +129,23 @@ function tick(caller, now) {
   const FF = M.FF, who = caller.name || '';
   return { [FF.done]: true, [FF.doneBy]: who, [FF.doneAt]: now, [FF.updatedBy]: who, [FF.updatedAt]: now };
 }
-function missingFor(r) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label); }
+// The photos the report needs (Troy, 2026-10-06: "to save errors on the patrollers part,
+// we have been getting them to get a photo of the license plate (both truck and trailer if
+// necessary), the drivers license, the insurance card. This in in addition to photos of
+// the damages.") A photo is the record — the typed numbers are optional. A hit & run has
+// no driver or vehicle to photograph, so only the damage photos are needed then.
+function photosMissing(r, mva) {
+  const p = r.photos || {}, n = k => (p[k] || []).length, out = [];
+  if (!n('accident') && !((mva && mva.photos) || []).length) out.push('Photos of the accident and damages');
+  if (!r.hitRun) {
+    if (!n('licence')) out.push("Photo of the driver's licence");
+    if (!n('plate')) out.push('Photo of the licence plate');
+    if (r.hasTrailer && !n('trailer')) out.push("Photo of the trailer's licence plate");
+    if (!n('insurance')) out.push('Photo of the insurance card');
+  }
+  return out;
+}
+function missingFor(r, mva) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label).concat(photosMissing(r, mva)); }
 
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
@@ -176,7 +193,7 @@ module.exports = async function handler(req, res) {
       if (Object.keys(f).length) rec = await patch(rec.id, f);
       const cur = shapeAR(rec);
       if (body.submit) {
-        const missing = missingFor(cur);
+        const missing = missingFor(cur, mva);
         if (missing.length) return res.status(400).json({ error: 'Still needed: ' + missing.join(', '), missing, report: cur });
         if (cur.status === 'Draft') rec = await patch(rec.id, { [A.status]: 'Submitted', [A.submittedBy]: caller.name || '', [A.submittedAt]: now });
         await M.upsertItem(mva, 'Accident Report', tick(caller, now));
@@ -196,4 +213,4 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { A, CHOICES, REQUIRED, toFields, shapeAR, missingFor };
+module.exports.lib = { A, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing };

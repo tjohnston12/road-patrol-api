@@ -687,7 +687,7 @@ module.exports = async function handler(req, res) {
 // ── The route: submit → verify → approve → filed → paid; send back at any step ──
 const T_AR = process.env.MVA_AR_TABLE || 'tblShwnpWGogKaZxG';
 const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repair: 'fldmEpRePHQOxRBkv',
-  licence: 'fld3jQnLxu5n5ggO2', plate: 'fld6VmNkhtBnI9H1K', insurance: 'fldgtdy42gUHjO4We' };
+  licence: 'fld3jQnLxu5n5ggO2', plate: 'fld6VmNkhtBnI9H1K', trailer: 'fldWb06wd1RE8uuiq', insurance: 'fldgtdy42gUHjO4We' };
 const isImg = a => /^image\//.test(a.type || '') || /\.(jpe?g|png|webp|heic|gif)$/i.test(a.filename || '');
 // Every photo in the file, in one place — "Photos are of the utmost importance for
 // claims to be processed quickly with insurance companies" (Troy).
@@ -702,7 +702,7 @@ async function photosFor(row) {
     const ar = ((await airtable(`${BASE}/${T_AR}?${qs}`)).records || [])[0];
     if (ar) { const f = ar.fields || {};
       add('Accident report — accident', f[AR.accident]); add('Accident report — repairs', f[AR.repair]);
-      add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Insurance card', f[AR.insurance]); }
+      add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Trailer plate', f[AR.trailer]); add('Insurance card', f[AR.insurance]); }
   } catch (_) { /* the photos panel is a convenience; never fail the read over it */ }
   for (const r of await folderRows(row.mvaNo)) {
     const f = r.fields || {};
