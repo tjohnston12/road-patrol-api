@@ -40,6 +40,10 @@ const airtable = async (p, opt = {}) => {
   const byId = url.searchParams.get('returnFieldsByFieldId') === 'true' || !!(body && body.returnFieldsByFieldId);
   const m = (opt.method || 'GET').toUpperCase();
   const [, , , table, id] = url.pathname.split('/');
+  if (table === 'tblUfWrGjHTHXszos') return { records: [['Tom Gibson', 'Derek Melanson'], ['Derek Melanson', ''], ['Michael Park', ''], ['Jay Mcinnis', '']]
+    .map(([n, m], i) => ({ id: 'recE' + i, fields: { fldtLjh72SJV8Uyfb: n, fldBggHLMX7abWiSK: n.split(' ')[0].toLowerCase() + '@mrdc.ca', fld06i7CJWbkIbCZA: m } })) };
+  if (table === 'tblN3F3YU9lg0K6Fz') return { records: [{ id: 'recR1', fields: { fldR6WX7zZziNhIEH: 'Operations Manager', fldcd2tacVtpOaA0P: 'Michael Park' } },
+    { id: 'recR2', fields: { fldR6WX7zZziNhIEH: 'Claims Manager', fldcd2tacVtpOaA0P: 'Jay Mcinnis' } }] };
   const tb = DB[table];
   if (!tb) throw new Error('unknown table ' + table);
   if (m !== 'GET') writes.push({ table, m, byId });
@@ -55,6 +59,7 @@ const airtable = async (p, opt = {}) => {
 };
 require.cache[libPath] = { id: libPath, filename: libPath, loaded: true, exports: {
   PAT: 'stub', airtable,
+  EF: { name: 'fldtLjh72SJV8Uyfb', email: 'fldBggHLMX7abWiSK', active: 'fldcHPqfxScpuUbZ6' }, EMP_BASE: 'appraSoUXoTbhroG6', EMP_TABLE: 'tblUfWrGjHTHXszos',
   arr: x => (Array.isArray(x) ? x : x == null ? [] : [x]), sel: x => (x && x.name) || x || '',
   num: x => (x === '' || x == null ? undefined : Number(x)), esc: s => String(s == null ? '' : s),
   cors: () => false, parseBody: req => (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})),
@@ -153,10 +158,19 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   session = S('Admin', 'Admin', 'Troy Johnston');
   r = await call('GET', null, { mva: mid });
   eq('a supervisor opens it', [r.status, r.json.report.reportNo], [200, '2026-10-06-303.000-EB-AR']);
-  DB[T.mva][mid].fields.fldIUbZxpDiRFY4VC = '2026-10-20';
+  session = S('Employee', 'Supervisor', 'Derek Melanson');
+  r = await call('GET', null, { mva: mid });
+  eq('the patroller\'s manager (the verifier) can read it', [r.status, r.json.canEdit], [200, false]);
+  r = await call('POST', { mva: mid, report: { truck: 'Z' } });
+  eq('…but not change it', r.status, 409);
+  DB[T.mva][mid].fields.fldelaGXvgjkSNxpH = 'Awaiting verification';
   session = S('Employee', 'Patroller', 'Tom Gibson');
   r = await call('POST', { mva: mid, report: { truck: 'Y' } });
-  eq('filed with insurance: closed to the patroller', r.status, 409);
+  eq('submitted for verification: closed to the patroller', [r.status, /sent back to you/.test(r.json.error)], [409, true]);
+  DB[T.mva][mid].fields.fldelaGXvgjkSNxpH = 'Sent back';
+  r = await call('POST', { mva: mid, report: { truck: 'Y2' } });
+  eq('sent back: open to him again', [r.status, r.json.report.truck], [200, 'Y2']);
+  DB[T.mva][mid].fields.fldelaGXvgjkSNxpH = 'With claims';
   session = S('Admin', 'Admin', 'Troy Johnston');
   r = await call('POST', { mva: mid, report: { truck: 'Y' } });
   eq('…a supervisor can still correct it', [r.status, r.json.report.truck], [200, 'Y']);

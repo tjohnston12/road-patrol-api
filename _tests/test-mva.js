@@ -52,13 +52,21 @@ function answer(rec, byId) {
   return { id: rec.id, createdTime: '2026-10-06T16:58:20.000Z', fields: out };
 }
 const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
-let FOLDER_DB = {}, fseq = 0, uploads = [];
+let FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [];
+// The Employees directory and MVA File Roles, as the route reads them.
+let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
+  { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
+let ROLES = [['Operations Manager', 'Michael Park'], ['Claims Manager', 'Jay Mcinnis']];
 const airtable = async (p, opt = {}) => {
   const url = new URL('https://api.airtable.com/v0/' + p);
   const body = opt.body ? JSON.parse(opt.body) : null;
   const byId = url.searchParams.get('returnFieldsByFieldId') === 'true' || !!(body && body.returnFieldsByFieldId);
   const m = (opt.method || 'GET').toUpperCase();
   const [, , , table, id] = url.pathname.split('/');
+  if (table === 'tblUfWrGjHTHXszos') return { records: EMP.map((e, i) => ({ id: 'recE' + i, fields: { fldtLjh72SJV8Uyfb: e.name, fldBggHLMX7abWiSK: e.email,
+    fldcHPqfxScpuUbZ6: { name: 'Active' }, fld06i7CJWbkIbCZA: e.manager || '' } })) };
+  if (table === 'tblN3F3YU9lg0K6Fz') return { records: ROLES.map((r, i) => ({ id: 'recR' + i, fields: { fldR6WX7zZziNhIEH: r[0], fldcd2tacVtpOaA0P: r[1] } })) };
+  if (table === 'tblShwnpWGogKaZxG') return { records: AR_RECS };
   if (table === T_FOLDER) {                                            // the folder rows: always asked for by id
     if (!byId) throw new Error('folder read/write without returnFieldsByFieldId');
     writes.push({ m, byId, table: 'folder' });
@@ -80,6 +88,7 @@ const airtable = async (p, opt = {}) => {
 require.cache[libPath] = {
   id: libPath, filename: libPath, loaded: true, exports: {
     PAT: 'stub-pat', airtable,
+    EF: { name: 'fldtLjh72SJV8Uyfb', email: 'fldBggHLMX7abWiSK', active: 'fldcHPqfxScpuUbZ6' }, EMP_BASE: 'appraSoUXoTbhroG6', EMP_TABLE: 'tblUfWrGjHTHXszos',
     arr: x => (Array.isArray(x) ? x : x == null ? [] : [x]),
     sel: x => (x && x.name) || x || '',
     num: x => (x === '' || x == null ? undefined : Number(x)),
@@ -94,9 +103,9 @@ require.cache[libPath] = {
 };
 // The Patrol Notifications switch. Most cases run as Everyone; section 7 runs
 // Owner test / Off / unreadable — Owner test is how it is set while Troy tests.
-let SW = { id: 'recSwMva', mode: 'Everyone' }, SW_THROWS = false, stamps = [];
+let SW = { id: 'recSwMva', mode: 'Everyone' }, WF = { id: 'recSwWf', mode: 'Everyone' }, SW_THROWS = false, stamps = [];
 require.cache[condPath] = { id: condPath, filename: condPath, loaded: true, exports: {
-  switchFor: async (name) => { if (SW_THROWS) throw new Error('Airtable 503'); return name === 'MVA notification' ? SW : { id: null, mode: 'Off' }; },
+  switchFor: async (name) => { if (SW_THROWS) throw new Error('Airtable 503'); return name === 'MVA notification' ? SW : name === 'MVA file workflow' ? WF : { id: null, mode: 'Off' }; },
   directory: async () => ({ people: [{ name: 'Troy Johnston', email: 'TJohnston@mrdc.ca', role: 'Owner', active: true }], lists: [] }),
   owners: dir => dir.people.filter(p => p.role === 'Owner').map(p => p.email),
   stampSwitch: async (sw, result) => { stamps.push({ sw, result }); },
@@ -125,7 +134,7 @@ async function call(method, body, query) {
   await handler({ method, headers: { cookie: 'htra_session=x', origin: 'https://www.mrdc-htra.com' }, query: query || {}, body }, res);
   return { status, json };
 }
-const reset = () => { DB = {}; writes = []; mails = []; seq = 0; FOLDER_DB = {}; fseq = 0; uploads = []; };
+const reset = () => { DB = {}; writes = []; mails = []; seq = 0; FOLDER_DB = {}; fseq = 0; uploads = []; AR_RECS = []; };
 const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', km: 303, direction: 'EB', route: 'Route 2',
   division: 'Western', patroller: 'Tom Gibson', vehicles: 2, damages: true, damageDesc: 'guiderail hit 10 pieces', summary: 'test entry' };
 
@@ -281,24 +290,112 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   r = await call('POST', { action: 'folderFileRemove', id: mid, item: 'Traffic control sheets', fileId: 'att1' });
   eq('…and can be removed', r.json.folder.items[4].files.length, 0);
 
-  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: 'Intact', claimNo: 'C-1' } });
-  eq('filing an incomplete folder: 409', r.status, 409);
-  eq('…naming what is missing', (r.json.missing || []).length, 7);
+  /* 9 — the route (2026-10-06): patroller → manager verifies → Operations Manager
+     approves → Claims Manager files with insurance → paid. Send back at any step. */
+  const P = (step, extra) => call('PATCH', Object.assign({ id: mid, step }, extra || {}));
+  r = await P('submit');
+  eq('submit with the folder incomplete: 409', r.status, 409);
+  ok('…names the items and the photos', (r.json.missing || []).length === 9 && /Photos of the accident/.test(r.json.error) && /Photos of the completed repairs \(at least one\)/.test(r.json.error), r.json.error);
   for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
                     'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
     await call('POST', { action: 'folder', id: mid, item: it, done: true });
-  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: '' } });
-  eq('the insurance company is required', r.status, 400);
-  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: 'Intact', claimNo: 'C-1' } });
-  eq('a complete folder files', [r.status, r.json.row.filedDate, r.json.row.filedInsurer, r.json.row.claimNo, r.json.row.filedBy],
-     [200, '2026-10-20', 'Intact', 'C-1', 'Tom Gibson']);
+  r = await P('submit');
+  eq('every item ticked but no photos: still 409', [r.status, (r.json.missing || []).length], [409, 2]);
+  await call('POST', { action: 'folderFile', id: mid, item: 'Accident photos and damages', data: 'eA==', filename: 'scene.jpg', contentType: 'image/jpeg' });
+  r = await P('submit');
+  ok('an accident photo but no repair photo: still 409', r.status === 409 && /completed repairs/.test(r.json.error) && !/accident and damages/.test(r.json.error));
+  AR_RECS = [{ id: 'recAR', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldmEpRePHQOxRBkv: [{ id: 'attR', url: 'https://x/fixed.jpg', filename: 'fixed.jpg', type: 'image/jpeg' }] } }];
+  r = await call('GET', null, { id: mid });
+  eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
+  eq('the photos panel gathers every photo in the file', [r.json.photos.accident, r.json.photos.repair, r.json.photos.list.map(p => p.source)],
+     [1, 1, ['Accident report — repairs', 'Folder — Accident photos and damages']]);
+  mails = [];
+  session = S('Employee', 'Patroller', 'James Rodey');
+  r = await P('submit');
+  eq('another patroller cannot submit it', r.status, 404);
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  r = await P('submit');
+  eq('the patroller submits', [r.status, r.json.row.stage, r.json.row.fileSubmittedBy, r.json.row.verifier], [200, 'Awaiting verification', 'Tom Gibson', 'Derek Melanson']);
+  eq('…the verifier (his manager) is emailed', [mails.length, mails[0] && mails[0].to], [1, ['oromocto@mrdc.ca']]);
+  ok('…with a link to the file', /mvas\.html\?id=/.test((mails[0] || {}).html || ''));
   r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: false });
-  eq('once filed, the patroller\'s folder is closed', r.status, 409);
-  r = await call('PATCH', { id: mid, filed: null });
-  eq('…and only a supervisor can reopen it', r.status, 403);
-  session = S('Admin', 'Admin', 'Troy Johnston');
-  r = await call('PATCH', { id: mid, filed: null });
-  eq('a supervisor reopens it', [r.status, r.json.row.filedDate], [200, '']);
+  eq('submitted: the patroller can no longer change the folder', r.status, 409);
+  r = await P('verify');
+  eq('…nor verify it himself', r.status, 403);
+
+  session = S('Employee', 'Supervisor', 'Michael Park');
+  r = await P('approve');
+  eq('the approver cannot approve before it is verified', r.status, 409);
+  r = await P('verify');
+  eq('…nor verify for the patroller\'s manager', r.status, 403);
+  session = S('Employee', 'Supervisor', 'Derek Melanson');
+  r = await call('GET', null, {});
+  eq('the manager sees it in his list, asked to verify', r.json.rows.map(x => [x.mvaNo, x.access.action]), [['2026-10-06-303.000-EB', 'verify']]);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: false });
+  eq('…he cannot change the folder (he sends it back instead)', r.status, 409);
+  r = await P('sendBack', { note: '' });
+  eq('sending back needs a note', r.status, 400);
+  mails = [];
+  r = await P('sendBack', { note: 'No photo of the guiderail ends' });
+  eq('he sends it back', [r.status, r.json.row.stage, r.json.row.sentBackNote], [200, 'Sent back', 'No photo of the guiderail ends']);
+  eq('…the patroller is emailed', mails[0] && mails[0].to, ['tgibson@mrdc.ca']);
+  ok('…and it is in the history', /Derek Melanson — sent back: No photo of the guiderail ends/.test(r.json.row.history));
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Claim Checklist', notes: 'Added the ends' });
+  eq('sent back: the patroller can change it again', r.status, 200);
+  r = await P('submit');
+  eq('…and resubmit (the note is cleared)', [r.json.row.stage, r.json.row.sentBackNote], ['Awaiting verification', '']);
+
+  session = S('Employee', 'Supervisor', 'Derek Melanson');
+  mails = [];
+  r = await P('verify');
+  eq('the manager verifies', [r.status, r.json.row.stage, r.json.row.verifiedBy], [200, 'Awaiting approval', 'Derek Melanson']);
+  eq('…the Operations Manager is emailed', mails[0] && mails[0].to, ['mpark@mrdc.ca']);
+  session = S('Employee', 'User', 'Jay Mcinnis');
+  r = await P('approve');
+  eq('the claims manager cannot approve', r.status, 403);
+  session = S('Employee', 'Supervisor', 'Michael Park');
+  mails = [];
+  r = await P('approve');
+  eq('Mike Park approves', [r.status, r.json.row.stage, r.json.row.approvedBy], [200, 'With claims', 'Michael Park']);
+  eq('…the Claims Manager is emailed', mails[0] && mails[0].to, ['jmcinnis@mrdc.ca']);
+  r = await P('filed', { filed: { date: '2026-10-20', insurer: 'Intact' } });
+  eq('only the claims manager files it', r.status, 403);
+
+  session = S('Employee', 'User', 'Jay Mcinnis');
+  r = await call('GET', null, { id: mid });
+  eq('the claims manager opens it, asked to file', [r.status, r.json.row.access.action], [200, 'file']);
+  r = await P('paid', { paid: { date: '2026-11-01' } });
+  eq('paid before filed: 409', r.status, 409);
+  r = await P('filed', { filed: { date: '2026-10-20', insurer: '' } });
+  eq('filing needs the insurer', r.status, 400);
+  r = await P('filed', { filed: { date: '2026-10-20', insurer: 'Intact', claimNo: 'C-1' } });
+  eq('he files it with the insurer', [r.status, r.json.row.stage, r.json.row.filedInsurer, r.json.row.claimNo, r.json.row.filedBy],
+     [200, 'Filed with insurance', 'Intact', 'C-1', 'Jay Mcinnis']);
+  r = await P('paid', { paid: { date: '2026-11-01', amount: '4210.55' } });
+  eq('…and records the payment', [r.status, r.json.row.stage, r.json.row.paidDate, r.json.row.paidAmount], [200, 'Paid', '2026-11-01', 4210.55]);
+  ok('the history reads in order', /submitted[\s\S]*sent back[\s\S]*submitted[\s\S]*verified[\s\S]*approved[\s\S]*filed with Intact \(claim C-1\)[\s\S]*payment received \$4210\.55/.test(r.json.row.history), r.json.row.history);
+
+  /* 10 — email through the workflow switch */
+  reset(); stamps = []; WF = { id: 'recSwWf', mode: 'Owner test' };
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  r = await call('POST', BASE_MVA); const m2 = r.json.row.id; mails = [];
+  for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
+                    'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
+    await call('POST', { action: 'folder', id: m2, item: it, done: true });
+  await call('POST', { action: 'folderFile', id: m2, item: 'Accident photos and damages', data: 'eA==', filename: 'a.jpg', contentType: 'image/jpeg' });
+  await call('POST', { action: 'folderFile', id: m2, item: 'Photos of the completed repairs', data: 'eA==', filename: 'b.jpg', contentType: 'image/jpeg' });
+  AR_RECS = [];
+  mails = [];
+  r = await call('PATCH', { id: m2, step: 'submit' });
+  eq('Owner test: the step email goes to the Owner only', [r.status, mails.length, mails[0] && mails[0].to], [200, 1, ['TJohnston@mrdc.ca']]);
+  ok('…marked [TEST], naming who it was for', /^\[TEST\]/.test(mails[0].subject) && /oromocto@mrdc\.ca/.test(mails[0].html));
+  WF = { id: 'recSwWf', mode: 'Everyone' };
+  EMP = EMP.map(e => e.name === 'Tom Gibson' ? Object.assign({}, e, { manager: '' }) : e);
+  reset(); r = await call('POST', BASE_MVA);
+  r = await call('GET', null, { id: r.json.row.id });
+  eq('no manager on file: the Operations Manager verifies', r.json.row.verifier, 'Michael Park');
+  EMP = EMP.map(e => e.name === 'Tom Gibson' ? Object.assign({}, e, { manager: 'Derek Melanson' }) : e);
 
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
