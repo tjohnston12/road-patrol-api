@@ -37,9 +37,9 @@ const NAMES = {
   fldNRjvZEFolYv9uq: 'Status', fldCFjoigjFgQwuv5: 'Notification Sent At', fld2uqP1UINkICedW: 'Notified',
   fldCZCNzveE8f62gi: 'Accident Report Required', fldd0JXy6NKliOKAd: 'Investigation Required',
   fldWIW6ejsJGjrMCM: 'Hit & Run', fld2h81Yn4jpfQUAz: 'Fatality', fldP4p8salI5YRkwU: 'Extensive Traffic Control',
-  fldQBjjZNYPVpUaaW: 'Summary',
+  fldQBjjZNYPVpUaaW: 'Summary', fldD7oUvWiKXgp8pJ: 'Lanes Blocked',
 };
-const SELECTS = ['fldgIA9dpSAllebrF', 'fldCbe3KQ2xm7Dgs3', 'fldypZa9PK1hyT6OU', 'fldNRjvZEFolYv9uq'];
+const SELECTS = ['fldgIA9dpSAllebrF', 'fldCbe3KQ2xm7Dgs3', 'fldypZa9PK1hyT6OU', 'fldNRjvZEFolYv9uq', 'fldD7oUvWiKXgp8pJ'];
 
 let DB = {}, writes = [], mails = [], DIR = [], seq = 0;
 function answer(rec, byId) {
@@ -58,7 +58,7 @@ const airtable = async (p, opt = {}) => {
   const m = (opt.method || 'GET').toUpperCase();
   const id = url.pathname.split('/')[4];
   if (m === 'GET' && !id) return { records: [] };                      // uniqueMvaNo: no clash
-  if (m === 'POST') { writes.push({ m, byId }); const rec = { id: 'recM' + (++seq), fields: body.fields }; DB[rec.id] = rec; return answer(rec, byId); }
+  if (m === 'POST') { writes.push({ m, byId, typecast: !!(body && body.typecast) }); const rec = { id: 'recM' + (++seq), fields: body.fields }; DB[rec.id] = rec; return answer(rec, byId); }
   if (m === 'PATCH') { writes.push({ m, byId, fields: Object.keys(body.fields) }); Object.assign(DB[id].fields, body.fields); return answer(DB[id], byId); }
   if (m === 'GET') return answer(DB[id], byId);
   throw new Error('unexpected ' + m);
@@ -179,6 +179,20 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('status change answers with the new status', r.json.row && r.json.row.status, 'Repairs pending');
   ok('…asking for field IDs', writes.slice(before).every(w => w.byId) && writes.length > before);
   eq('…and the MVA No. still reads', r.json.row && r.json.row.mvaNo, '2026-10-06-303.000-EB');
+
+  /* 6b — Lanes blocked: Ramp (2026-10-06) */
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  reset(); let lastBody = null;
+  r = await call('GET', null, { meta: '1' });
+  ok('Ramp is offered for lanes blocked', (r.json.choices.lanes || []).includes('Ramp'), JSON.stringify(r.json.choices.lanes));
+  reset();
+  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, lanes: 'Ramp' });
+  eq('Ramp is saved', DB[r.json.row.id].fields.fldD7oUvWiKXgp8pJ, 'Ramp');
+  eq('…and flagged in the subject', (mails[0] || {}).subject, 'MVA 2026-10-06-303.000-EB — Highway blocked — Ramp');
+  ok('the create lets Airtable add the choice on first use (typecast)', writes[0] && writes[0].typecast === true);
+  reset();
+  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, lanes: 'Somewhere else' });
+  ok('a lanes value not on the list is dropped', !('fldD7oUvWiKXgp8pJ' in DB[r.json.row.id].fields));
 
   /* 7 — the switch: Owner test while Troy tests */
   session = S('Employee', 'Patroller', 'Tom Gibson');
