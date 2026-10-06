@@ -92,7 +92,8 @@ const CHOICES = {
   routes:     ['Route 2', 'Route 7', 'Other'],
   directions: ['EB', 'WB', 'NB', 'SB'],
   services:   ['Police (RCMP)', 'Ambulance', 'Fire', 'Dept. of Environment', 'Tow', 'DTI', 'None'],
-  lanes:      ['Shoulder only', 'One lane', 'Both lanes', 'Full closure'],
+  // 'Ramp' added 2026-10-06 (Troy: "for lanes blocked on mva can you add Ramp").
+  lanes:      ['Shoulder only', 'One lane', 'Both lanes', 'Ramp', 'Full closure'],
   animals:    ['Deer', 'Moose', 'Bear', 'Coyote', 'Fox', 'Other'],
   statuses:   ['Notified', 'Accident report started', 'Under investigation',
                'Repairs pending', 'Ready for claim', 'Closed'],
@@ -386,7 +387,10 @@ module.exports = async function handler(req, res) {
       // answers by field NAME, every value reads blank, and the first live MVA
       // (2026-10-06) went out with the subject "MVA" and an empty body.
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
-        method: 'POST', body: JSON.stringify({ fields, returnFieldsByFieldId: true }),
+        // typecast: Lanes Blocked is a single select; it lets a choice listed in
+        // CHOICES (e.g. 'Ramp') be added on first use. Every value is already
+        // restricted to CHOICES by toFields(), so nothing free-form gets through.
+        method: 'POST', body: JSON.stringify({ fields, returnFieldsByFieldId: true, typecast: true }),
       });
       let row = shape(created);
 
