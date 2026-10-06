@@ -85,6 +85,12 @@ const F = {
   invRequired:    'fldd0JXy6NKliOKAd', // formula
   accidentReport: 'fldFOsb5XhmutWECX', // reverse link -> Accident Reports
   investigation:  'fldzrZmDoSX2oDx6v', // reverse link -> Investigations
+  // Filing with insurance — the end of the patroller's part (added 2026-10-06).
+  filedDate:      'fldIUbZxpDiRFY4VC', // date
+  filedInsurer:   'fld5cVD0rOTNZ35l9',
+  claimNo:        'fldPuYIFTuu8A59pz',
+  filedBy:        'fldjIytSPIpJDAhr8',
+  filedAt:        'fld9iUoLpAiaNRU7x',
 };
 
 const CHOICES = {
@@ -151,6 +157,11 @@ function shape(rec) {
     invRequired:    f[F.invRequired] === 'Yes',
     hasAccidentReport:  arr(f[F.accidentReport]).length > 0,
     hasInvestigation:   arr(f[F.investigation]).length > 0,
+    filedDate:      f[F.filedDate] || '',
+    filedInsurer:   f[F.filedInsurer] || '',
+    claimNo:        f[F.claimNo] || '',
+    filedBy:        f[F.filedBy] || '',
+    filedAt:        f[F.filedAt] || '',
     createdTime:    rec.createdTime,
   };
 }
@@ -293,15 +304,81 @@ function testBanner(real) {
 
 // The accident file folder — what the patroller builds so a claim can be filed.
 // The items are the Accident Claim Checklist (3.1.2 Accident Claim Work Summary).
-const FOLDER = ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages',
-  'Photos of the completed repairs', 'Traffic control sheets', 'Copy of the time sheets',
-  'Accident Claim Checklist — signed by the patroller and the Area Manager'];
+// The Item names are stored on each MVA File Folder row — renaming one orphans
+// the rows already saved under the old name.
+const FOLDER = [
+  { item: 'Accident Report',                 hint: 'The on-scene report: driver, vehicle, insurance and damages.' },
+  { item: 'Accident Claim Work Summary',     hint: 'Response hours and equipment, traffic control and repair labour.' },
+  { item: 'Accident photos and damages',     hint: '' },
+  { item: 'Photos of the completed repairs', hint: '' },
+  { item: 'Traffic control sheets',          hint: '' },
+  { item: 'Copy of the time sheets',         hint: '' },
+  { item: 'Accident Claim Checklist',        hint: 'Signed by the patroller and the Area Manager.' },
+];
+const ITEMS = FOLDER.map(x => x.item);
 function folderHtml(row) {
   return `<div style="margin-top:16px;border:1px solid #DDD9D0;border-radius:8px;padding:12px 16px">
     <div style="font-weight:600;margin-bottom:6px">Accident file folder — ${esc(row.mvaNo)}</div>
     <div style="font-size:13px;color:#6B6B6B;margin-bottom:6px">${esc(row.patroller || 'The patroller')} builds and completes the folder for this MVA:</div>
-    <ul style="margin:0;padding-left:20px">${FOLDER.map(i => `<li style="padding:2px 0">${esc(i)}</li>`).join('')}</ul></div>`;
+    <ul style="margin:0;padding-left:20px">${FOLDER.map(i => `<li style="padding:2px 0">${esc(i.item)}${i.hint ? ' — ' + esc(i.hint) : ''}</li>`).join('')}</ul>
+    <div style="margin-top:8px;font-size:13px"><a href="${esc(APP_URL)}mvas.html?id=${encodeURIComponent(row.id)}" style="color:#15616D">Open the folder in the Road Patrol app</a></div></div>`;
 }
+
+// ── The folder rows (MVA File Folder) ─────────────────────────────────────────
+const T_FOLDER = process.env.MVA_FOLDER_TABLE || 'tbl9VS7Ggu8UKCeXU';
+const FF = { key: 'fld0beeAYR8nhCJX7', mva: 'fldgBEhKPojKUDyiq', mvaNo: 'fldZ6jtW2k7LqxPe0', item: 'fldLCZxKhdozk8fhk',
+  done: 'fldUjL1uELhKd5O3P', doneBy: 'fldv9yBGj0fMQglnx', doneAt: 'fldEv5ndR6kFEojtP', files: 'fldX1QOIze3KlNiT1',
+  notes: 'fld0HKIYmCVg8XA3I', updatedBy: 'fld6IhCHIoF9YjE10', updatedAt: 'fldQVnAa268exkeJq' };
+const itemKey = (mvaNo, item) => `${mvaNo} · ${item}`;
+function shapeItem(rec) {
+  const f = rec.fields || {};
+  return { id: rec.id, item: f[FF.item] || '', done: !!f[FF.done], doneBy: f[FF.doneBy] || '', doneAt: f[FF.doneAt] || '',
+    notes: f[FF.notes] || '', updatedBy: f[FF.updatedBy] || '', updatedAt: f[FF.updatedAt] || '',
+    files: arr(f[FF.files]).map(a => ({ id: a.id, url: a.url, filename: a.filename, type: a.type || '', size: a.size || 0,
+      thumb: a.thumbnails?.large?.url || a.thumbnails?.small?.url || '' })) };
+}
+async function folderRows(mvaNo) {
+  const out = []; let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '100'); qs.set('returnFieldsByFieldId', 'true');
+    if (mvaNo) qs.set('filterByFormula', `{MVA No.}='${String(mvaNo).replace(/'/g, "\\'")}'`);
+    if (offset) qs.set('offset', offset);
+    const page = await airtable(`${BASE}/${T_FOLDER}?${qs}`);
+    out.push(...(page.records || [])); offset = page.offset;
+  } while (offset);
+  return out;
+}
+// The folder as the page shows it: every item, in order, saved or not.
+function folderView(row, recs) {
+  const by = {}; for (const r of recs) { const it = shapeItem(r); if (ITEMS.includes(it.item)) by[it.item] = it; }
+  const items = FOLDER.map(x => Object.assign({ item: x.item, hint: x.hint, done: false, files: [], notes: '' }, by[x.item] || {}, { hint: x.hint }));
+  return { items, done: items.filter(i => i.done).length, total: items.length };
+}
+async function upsertItem(row, item, fields) {
+  const recs = await folderRows(row.mvaNo);
+  const hit = recs.find(r => (r.fields || {})[FF.item] === item);
+  if (hit) return airtable(`${BASE}/${T_FOLDER}/${hit.id}`, { method: 'PATCH',
+    body: JSON.stringify({ fields, returnFieldsByFieldId: true }) });
+  return airtable(`${BASE}/${T_FOLDER}`, { method: 'POST', body: JSON.stringify({ returnFieldsByFieldId: true,
+    fields: Object.assign({ [FF.key]: itemKey(row.mvaNo, item), [FF.mva]: [row.id], [FF.mvaNo]: row.mvaNo, [FF.item]: item }, fields) }) });
+}
+
+// The patroller who filed it (or the patroller named on it) owns the MVA up to
+// filing with insurance; supervisors and admins see and help with every one.
+function ownsMva(row, caller) {
+  if (caller.isAdmin) return true;
+  const me = String(caller.name || '').trim().toLowerCase();
+  return !!me && [row.patroller, row.submittedBy].some(n => String(n || '').trim().toLowerCase() === me);
+}
+async function loadOwned(id, caller) {
+  if (!id || !/^rec[A-Za-z0-9]{14}$/.test(String(id))) return null;
+  let rec; try { rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`); }
+  catch (e) { if (e.status === 404 || e.status === 403) return null; throw e; }
+  const row = shape(rec);
+  return ownsMva(row, caller) ? row : null;
+}
+const NOT_FOUND = { error: 'MVA not found' };
 
 async function fetchRows({ mine, who }) {
   const rows = [];
@@ -342,13 +419,21 @@ module.exports = async function handler(req, res) {
       }
       const id = req.query?.id;
       if (id) {
-        const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`);
-        return res.status(200).json({ row: shape(rec) });
+        // Not theirs, or no such record: the same 404, so a guessed id says nothing.
+        const row = await loadOwned(id, caller);
+        if (!row) return res.status(404).json(NOT_FOUND);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin });
       }
       const mine = String(req.query?.mine || '') === '1' || !caller.isAdmin;
       const recs = await fetchRows({ mine, who: caller.name });
+      const rows = recs.map(shape);
+      // Folder progress for the list — one read of the folder table.
+      let all = []; try { all = rows.length ? await folderRows('') : []; } catch (_) { all = []; }
+      const by = {}; for (const r of all) { const f = r.fields || {}; (by[f[FF.mvaNo]] = by[f[FF.mvaNo]] || []).push(r); }
+      for (const r of rows) { const v = folderView(r, by[r.mvaNo] || []); r.folderDone = v.done; r.folderTotal = v.total; }
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ rows: recs.map(shape), scope: mine ? 'mine' : 'all' });
+      return res.status(200).json({ rows, scope: mine ? 'mine' : 'all', items: FOLDER });
     }
 
     const body = L.parseBody(req);
@@ -357,12 +442,47 @@ module.exports = async function handler(req, res) {
     // then pushes each photo up.
     if (req.method === 'POST' && body.action === 'upload') {
       if (!body.id || !body.data) return res.status(400).json({ error: 'id and data (base64) are required' });
+      if (!(await loadOwned(body.id, caller))) return res.status(404).json(NOT_FOUND);
       await L.uploadAttachment({
         base: BASE, recordId: body.id, fieldId: F.photos,
         filename: body.filename, contentType: body.contentType, data: body.data,
       });
       const rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}?returnFieldsByFieldId=true`);
       return res.status(200).json({ row: shape(rec) });
+    }
+
+    // ── The accident file folder (patrol/mvas.html) ──────────────────────────
+    if (req.method === 'POST' && /^folder/.test(String(body.action || ''))) {
+      const row = await loadOwned(body.id, caller);
+      if (!row) return res.status(404).json(NOT_FOUND);
+      if (!ITEMS.includes(body.item)) return res.status(400).json({ error: 'Unknown folder item' });
+      if (row.filedDate && !caller.isAdmin)
+        return res.status(409).json({ error: 'This MVA has been filed with insurance — the folder is closed. Ask a supervisor if something needs changing.' });
+      const now = new Date().toISOString();
+      const who = { [FF.updatedBy]: caller.name || '', [FF.updatedAt]: now };
+      if (body.action === 'folder') {
+        const f = Object.assign({}, who);
+        if (body.done !== undefined) {
+          f[FF.done] = !!body.done;
+          f[FF.doneBy] = body.done ? (caller.name || '') : '';
+          f[FF.doneAt] = body.done ? now : null;
+        }
+        if (body.notes !== undefined) f[FF.notes] = String(body.notes).slice(0, 5000);
+        await upsertItem(row, body.item, f);
+      } else if (body.action === 'folderFile') {
+        if (!body.data) return res.status(400).json({ error: 'data (base64) is required' });
+        const rec = await upsertItem(row, body.item, who);
+        await L.uploadAttachment({ base: BASE, recordId: rec.id, fieldId: FF.files,
+          filename: body.filename, contentType: body.contentType, data: body.data });
+      } else if (body.action === 'folderFileRemove') {
+        const recs = await folderRows(row.mvaNo);
+        const hit = recs.find(r => (r.fields || {})[FF.item] === body.item);
+        if (!hit) return res.status(404).json({ error: 'File not found' });
+        const keep = arr((hit.fields || {})[FF.files]).filter(a => a.id !== body.fileId).map(a => ({ id: a.id }));
+        await airtable(`${BASE}/${T_FOLDER}/${hit.id}`, { method: 'PATCH',
+          body: JSON.stringify({ returnFieldsByFieldId: true, fields: Object.assign({ [FF.files]: keep }, who) }) });
+      } else return res.status(400).json({ error: 'Unknown action' });
+      return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin });
     }
 
     if (req.method === 'POST') {
@@ -429,7 +549,27 @@ module.exports = async function handler(req, res) {
 
     if (req.method === 'PATCH') {
       if (!body.id) return res.status(400).json({ error: 'id is required' });
+      const own = await loadOwned(body.id, caller);
+      if (!own) return res.status(404).json(NOT_FOUND);
       const f = {};
+      // Filed with insurance — the patroller's last step. Only once the folder
+      // is complete; a supervisor can file regardless (and can clear it).
+      if (body.filed !== undefined) {
+        if (body.filed === null) {
+          if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can reopen a filed MVA.' });
+          Object.assign(f, { [F.filedDate]: null, [F.filedInsurer]: '', [F.claimNo]: '', [F.filedBy]: '', [F.filedAt]: null });
+        } else {
+          const date = String(body.filed.date || '');
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'The date it was filed is required' });
+          if (!String(body.filed.insurer || '').trim()) return res.status(400).json({ error: 'The insurance company is required' });
+          const v = folderView(own, await folderRows(own.mvaNo));
+          const missing = v.items.filter(i => !i.done).map(i => i.item);
+          if (missing.length && !caller.isAdmin)
+            return res.status(409).json({ error: 'The folder is not complete yet: ' + missing.join(', '), missing });
+          Object.assign(f, { [F.filedDate]: date, [F.filedInsurer]: String(body.filed.insurer).trim().slice(0, 200),
+            [F.claimNo]: String(body.filed.claimNo || '').trim().slice(0, 100), [F.filedBy]: caller.name || '', [F.filedAt]: new Date().toISOString() });
+        }
+      }
       // The patroller who filed it can add the DMT work order number; status
       // changes are a supervisor action.
       if (body.dmtWo !== undefined) f[F.dmtWo] = body.dmtWo;
