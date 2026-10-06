@@ -21,6 +21,7 @@ const Module = require('module');
 const libPath  = path.join(__dirname, '..', 'api', '_lib.js');
 const authPath = path.join(__dirname, '..', 'api', '_auth.js');
 const MVA      = path.join(__dirname, '..', 'api', 'mva.js');
+const condPath = path.join(__dirname, '..', 'api', '_conditions.js');
 
 let pass = 0, fail = 0; const failures = [];
 const ok = (n, c, x) => { if (c) pass++; else { fail++; failures.push(n + (x ? ` — ${x}` : '')); } };
@@ -77,10 +78,20 @@ require.cache[libPath] = {
     sendMailDetailed: async () => ({ sent: [], reason: '' }),
   },
 };
+// The Patrol Notifications switch. Most cases run as Everyone; section 7 runs
+// Owner test / Off / unreadable — Owner test is how it is set while Troy tests.
+let SW = { id: 'recSwMva', mode: 'Everyone' }, SW_THROWS = false, stamps = [];
+require.cache[condPath] = { id: condPath, filename: condPath, loaded: true, exports: {
+  switchFor: async (name) => { if (SW_THROWS) throw new Error('Airtable 503'); return name === 'MVA notification' ? SW : { id: null, mode: 'Off' }; },
+  directory: async () => ({ people: [{ name: 'Troy Johnston', email: 'TJohnston@mrdc.ca', role: 'Owner', active: true }], lists: [] }),
+  owners: dir => dir.people.filter(p => p.role === 'Owner').map(p => p.email),
+  stampSwitch: async (sw, result) => { stamps.push({ sw, result }); },
+} };
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (r, ...rest) {
   if (r === './_lib') return libPath;
   if (r === './_auth') return authPath;
+  if (r === './_conditions') return condPath;
   return origResolve.call(this, r, ...rest);
 };
 
@@ -168,6 +179,31 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('status change answers with the new status', r.json.row && r.json.row.status, 'Repairs pending');
   ok('…asking for field IDs', writes.slice(before).every(w => w.byId) && writes.length > before);
   eq('…and the MVA No. still reads', r.json.row && r.json.row.mvaNo, '2026-10-06-303.000-EB');
+
+  /* 7 — the switch: Owner test while Troy tests */
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  reset(); stamps = []; SW = { id: 'recSwMva', mode: 'Owner test' };
+  r = await call('POST', BASE_MVA);
+  eq('Owner test: one email', mails.length, 1);
+  eq('…to the Owner only', (mails[0] || {}).to, ['TJohnston@mrdc.ca']);
+  ok('…marked [TEST]', /^\[TEST\] MVA 2026-10-06-303\.000-EB/.test((mails[0] || {}).subject || ''), (mails[0] || {}).subject);
+  ok('…naming who it would have reached', /would have gone to: AccidentGroup2@mrdc\.ca, tgibson@mrdc\.ca/.test((mails[0] || {}).html || ''));
+  ok('…with the full notification below', /Accident file folder/.test((mails[0] || {}).html || ''));
+  ok('Notified says it was a test and who it would have reached',
+     /^Owner test — sent to TJohnston@mrdc\.ca; would have gone to AccidentGroup2@mrdc\.ca, tgibson@mrdc\.ca$/.test(r.json.row.notified), r.json.row.notified);
+  eq('the page is told the mode', r.json.mode, 'Owner test');
+  ok('the switch is stamped', stamps.length === 1 && /^2026-10-06-303\.000-EB: Owner test/.test(stamps[0].result));
+
+  reset(); SW = { id: 'recSwMva', mode: 'Off' };
+  r = await call('POST', BASE_MVA);
+  ok('Off: nothing sent, the MVA still saved', !mails.length && r.status === 200 && r.json.row.mvaNo === '2026-10-06-303.000-EB');
+  ok('…Notified says so', /^Off — not sent; would have gone to/.test(r.json.row.notified));
+  ok('…and no sent time', !r.json.row.notifiedAt);
+
+  reset(); SW_THROWS = true;
+  r = await call('POST', BASE_MVA);
+  ok('switch unreadable: treated as Off, MVA still saved', !mails.length && r.status === 200 && /^Off/.test(r.json.row.notified));
+  SW_THROWS = false; SW = { id: 'recSwMva', mode: 'Everyone' };
 
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
