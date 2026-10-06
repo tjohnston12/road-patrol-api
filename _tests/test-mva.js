@@ -51,16 +51,30 @@ function answer(rec, byId) {
   for (const [k, v] of Object.entries(f)) out[byId ? k : (NAMES[k] || k)] = v;
   return { id: rec.id, createdTime: '2026-10-06T16:58:20.000Z', fields: out };
 }
+const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
+let FOLDER_DB = {}, fseq = 0, uploads = [];
 const airtable = async (p, opt = {}) => {
   const url = new URL('https://api.airtable.com/v0/' + p);
   const body = opt.body ? JSON.parse(opt.body) : null;
   const byId = url.searchParams.get('returnFieldsByFieldId') === 'true' || !!(body && body.returnFieldsByFieldId);
   const m = (opt.method || 'GET').toUpperCase();
-  const id = url.pathname.split('/')[4];
-  if (m === 'GET' && !id) return { records: [] };                      // uniqueMvaNo: no clash
-  if (m === 'POST') { writes.push({ m, byId, typecast: !!(body && body.typecast) }); const rec = { id: 'recM' + (++seq), fields: body.fields }; DB[rec.id] = rec; return answer(rec, byId); }
+  const [, , , table, id] = url.pathname.split('/');
+  if (table === T_FOLDER) {                                            // the folder rows: always asked for by id
+    if (!byId) throw new Error('folder read/write without returnFieldsByFieldId');
+    writes.push({ m, byId, table: 'folder' });
+    if (m === 'GET') { const f = url.searchParams.get('filterByFormula') || ''; const want = (f.match(/='(.*)'$/) || [])[1];
+      return { records: Object.values(FOLDER_DB).filter(r => !want || r.fields.fldZ6jtW2k7LqxPe0 === want).map(r => JSON.parse(JSON.stringify(r))) }; }
+    if (m === 'POST') { const rec = { id: 'recF' + String(++fseq).padStart(13, '0'), fields: body.fields }; FOLDER_DB[rec.id] = rec; return rec; }
+    if (m === 'PATCH') { Object.assign(FOLDER_DB[id].fields, body.fields); return FOLDER_DB[id]; }
+  }
+  if (m === 'GET' && !id) {
+    const f = url.searchParams.get('filterByFormula') || '';
+    if (/\{MVA No\.\}/.test(f)) return { records: [] };                 // uniqueMvaNo: no clash
+    return { records: Object.values(DB).map(r => answer(r, byId)) };    // the list (scoping is Airtable's formula)
+  }
+  if (m === 'POST') { writes.push({ m, byId, typecast: !!(body && body.typecast) }); const rec = { id: 'recM' + String(++seq).padStart(13, '0'), fields: body.fields }; DB[rec.id] = rec; return answer(rec, byId); }
   if (m === 'PATCH') { writes.push({ m, byId, fields: Object.keys(body.fields) }); Object.assign(DB[id].fields, body.fields); return answer(DB[id], byId); }
-  if (m === 'GET') return answer(DB[id], byId);
+  if (m === 'GET') { if (!DB[id]) { const e = new Error('NOT_FOUND'); e.status = 404; throw e; } return answer(DB[id], byId); }
   throw new Error('unexpected ' + m);
 };
 require.cache[libPath] = {
@@ -73,7 +87,7 @@ require.cache[libPath] = {
     cors: () => false,
     parseBody: req => (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})),
     getEmployees: async () => DIR, getPatrollers: async () => DIR,
-    uploadAttachment: async () => '',
+    uploadAttachment: async (o) => { uploads.push(o); const r = FOLDER_DB[o.recordId]; if (r) (r.fields.fldX1QOIze3KlNiT1 = r.fields.fldX1QOIze3KlNiT1 || []).push({ id: 'att' + uploads.length, url: 'https://x/' + o.filename, filename: o.filename }); return ''; },
     sendMail: async (o) => { mails.push(o); return Array.isArray(o.to) ? o.to : String(o.to).split(','); },
     sendMailDetailed: async () => ({ sent: [], reason: '' }),
   },
@@ -111,7 +125,7 @@ async function call(method, body, query) {
   await handler({ method, headers: { cookie: 'htra_session=x', origin: 'https://www.mrdc-htra.com' }, query: query || {}, body }, res);
   return { status, json };
 }
-const reset = () => { DB = {}; writes = []; mails = []; seq = 0; };
+const reset = () => { DB = {}; writes = []; mails = []; seq = 0; FOLDER_DB = {}; fseq = 0; uploads = []; };
 const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', km: 303, direction: 'EB', route: 'Route 2',
   division: 'Western', patroller: 'Tom Gibson', vehicles: 2, damages: true, damageDesc: 'guiderail hit 10 pieces', summary: 'test entry' };
 
@@ -134,7 +148,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   /* 2 — the patroller gets it, from the directory */
   eq('to the Accident Group and the patroller', m.to, ['AccidentGroup2@mrdc.ca', 'tgibson@mrdc.ca']);
   ok('the address in the request is ignored', !JSON.stringify(m.to).includes('someone@else.com'));
-  eq('the record keeps the directory address', DB['recM1'].fields.fldlCV1Cyknry8KQf, 'tgibson@mrdc.ca');
+  eq('the record keeps the directory address', DB[Object.keys(DB)[0]].fields.fldlCV1Cyknry8KQf, 'tgibson@mrdc.ca');
   eq('Notified lists both', r.json.row.notified, 'AccidentGroup2@mrdc.ca, tgibson@mrdc.ca');
   eq('the page is told two recipients', r.json.emailedTo.length, 2);
 
@@ -218,6 +232,73 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   r = await call('POST', BASE_MVA);
   ok('switch unreadable: treated as Off, MVA still saved', !mails.length && r.status === 200 && /^Off/.test(r.json.row.notified));
   SW_THROWS = false; SW = { id: 'recSwMva', mode: 'Everyone' };
+
+  /* 8 — the accident file folder (patrol/mvas.html), 2026-10-06 */
+  SW = { id: 'recSwMva', mode: 'Everyone' };
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  reset();
+  r = await call('POST', BASE_MVA);
+  const mid = r.json.row.id;
+  ok('the email links to the folder', (mails[0] || {}).html.includes('mvas.html?id=' + mid));
+  r = await call('GET', null, { id: mid });
+  eq('the patroller opens their MVA', r.status, 200);
+  eq('…with the seven folder items, none done', [r.json.folder.total, r.json.folder.done, r.json.folder.items.map(i => i.item)],
+     [7, 0, ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
+             'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist']]);
+  r = await call('GET', null, {});
+  eq('the list carries folder progress', [r.json.rows.length, r.json.rows[0].folderDone, r.json.rows[0].folderTotal], [1, 0, 7]);
+
+  session = S('Employee', 'Patroller', 'James Rodey');
+  r = await call('GET', null, { id: mid });
+  eq('another patroller: 404', r.status, 404);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: true });
+  eq('…cannot tick their folder', r.status, 404);
+  r = await call('POST', { action: 'upload', id: mid, data: 'eA==', filename: 'x.jpg' });
+  eq('…cannot add photos to their MVA', r.status, 404);
+  r = await call('PATCH', { id: mid, dmtWo: 'WO-1' });
+  eq('…cannot set the DMT work order', r.status, 404);
+  r = await call('GET', null, { id: 'not-a-record' });
+  eq('a malformed id: 404', r.status, 404);
+  session = S('Admin', 'Admin', 'Troy Johnston');
+  r = await call('GET', null, { id: mid });
+  eq('a supervisor opens anyone\'s', r.status, 200);
+
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  r = await call('POST', { action: 'folder', id: mid, item: 'Something else', done: true });
+  eq('an unknown item: 400', r.status, 400);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: true, notes: 'Driver statement attached' });
+  const ar = r.json.folder.items[0];
+  ok('ticking an item records who and when', ar.done && ar.doneBy === 'Tom Gibson' && !!ar.doneAt, JSON.stringify(ar));
+  eq('…and the notes', ar.notes, 'Driver statement attached');
+  eq('…one row, keyed to the MVA', Object.values(FOLDER_DB).map(x => [x.fields.fld0beeAYR8nhCJX7, x.fields.fldgBEhKPojKUDyiq]),
+     [['2026-10-06-303.000-EB · Accident Report', [mid]]]);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: false });
+  ok('unticking clears who and when', !r.json.folder.items[0].done && !r.json.folder.items[0].doneBy);
+  eq('…still one row', Object.keys(FOLDER_DB).length, 1);
+  r = await call('POST', { action: 'folderFile', id: mid, item: 'Traffic control sheets', data: 'JVBERi0=', filename: 'tc.pdf', contentType: 'application/pdf' });
+  eq('a file goes onto that item\'s row', [uploads.length, uploads[0] && uploads[0].fieldId, r.json.folder.items[4].files.map(f => f.filename)],
+     [1, 'fldX1QOIze3KlNiT1', ['tc.pdf']]);
+  r = await call('POST', { action: 'folderFileRemove', id: mid, item: 'Traffic control sheets', fileId: 'att1' });
+  eq('…and can be removed', r.json.folder.items[4].files.length, 0);
+
+  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: 'Intact', claimNo: 'C-1' } });
+  eq('filing an incomplete folder: 409', r.status, 409);
+  eq('…naming what is missing', (r.json.missing || []).length, 7);
+  for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
+                    'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
+    await call('POST', { action: 'folder', id: mid, item: it, done: true });
+  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: '' } });
+  eq('the insurance company is required', r.status, 400);
+  r = await call('PATCH', { id: mid, filed: { date: '2026-10-20', insurer: 'Intact', claimNo: 'C-1' } });
+  eq('a complete folder files', [r.status, r.json.row.filedDate, r.json.row.filedInsurer, r.json.row.claimNo, r.json.row.filedBy],
+     [200, '2026-10-20', 'Intact', 'C-1', 'Tom Gibson']);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Report', done: false });
+  eq('once filed, the patroller\'s folder is closed', r.status, 409);
+  r = await call('PATCH', { id: mid, filed: null });
+  eq('…and only a supervisor can reopen it', r.status, 403);
+  session = S('Admin', 'Admin', 'Troy Johnston');
+  r = await call('PATCH', { id: mid, filed: null });
+  eq('a supervisor reopens it', [r.status, r.json.row.filedDate], [200, '']);
 
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
