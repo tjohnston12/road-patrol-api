@@ -22,8 +22,8 @@
  *   POST {mva, repairs:{date, notes}, repairsDone:true}   proof of repairs; ticks
  *                                           "Photos of the completed repairs"
  * Ownership: the MVA's patroller / submitter, or a supervisor (mva.js ownsMva).
- * Anything else is 404. Once the MVA is filed with insurance it is read-only to
- * the patroller (409), as the folder is.
+ * The file's reviewers (verifier, approver, claims manager) can read it. Anyone else
+ * is 404. Only the patroller (while Open / Sent back) or an admin may change it (409).
  */
 const L = require('./_lib');
 const { requireCaller } = require('./_auth');
@@ -140,14 +140,18 @@ module.exports = async function handler(req, res) {
       const mva = await M.loadOwned(req.query?.mva, caller);
       if (!mva) return res.status(404).json(M.NOT_FOUND);
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ mva, report: shapeAR(await findReport(mva)), choices: CHOICES, admin: !!caller.isAdmin });
+      return res.status(200).json({ mva, report: shapeAR(await findReport(mva)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva) });
     }
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const body = L.parseBody(req);
     const mva = await M.loadOwned(body.mva, caller);
     if (!mva) return res.status(404).json(M.NOT_FOUND);
-    if (mva.filedDate && !caller.isAdmin)
-      return res.status(409).json({ error: 'This MVA has been filed with insurance — the accident report is closed. Ask a supervisor if something needs changing.' });
+    // Editable while the file is the patroller's (Open / Sent back), or by an admin.
+    // Once submitted it goes up the route (mva.js step) and is read-only to everyone
+    // else — a reviewer sends it back with a note instead of changing it.
+    if (!M.canEdit(mva))
+      return res.status(409).json({ error: mva.access && mva.access.own ? 'The accident file has been submitted (' + mva.stage + ') — it can only be changed if it is sent back to you.'
+                                                                        : 'Only the patroller fills in the accident report — send the file back with a note if something is missing.' });
     const now = new Date().toISOString();
     let rec = await ensureReport(mva, caller);
     let note = '';

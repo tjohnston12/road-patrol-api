@@ -91,6 +91,19 @@ const F = {
   claimNo:        'fldPuYIFTuu8A59pz',
   filedBy:        'fldjIytSPIpJDAhr8',
   filedAt:        'fld9iUoLpAiaNRU7x',
+  // The accident file's route (2026-10-06): patroller → manager verifies →
+  // Operations Manager approves → Claims Manager files with insurance → paid.
+  stage:          'fldelaGXvgjkSNxpH',
+  history:        'fldGYosJk4ajH70iq',
+  fileSubBy:      'fldXx2X2nyuWF1PMu',
+  fileSubAt:      'fldaF44XoudOvZtc6',
+  verifiedBy:     'fld8AmIv1nazO3RZa',
+  verifiedAt:     'fldjd8H86b7knFBjg',
+  approvedBy:     'fld0BDyLCooClS1fj',
+  approvedAt:     'fld0UlANpSaFDgtyr',
+  sentBackNote:   'fldx4tHHCSKrUIuJL',
+  paidDate:       'fldP5WqwAuKVhvSMd',
+  paidAmount:     'fldgJYeGT2PxIWOBz',
 };
 
 const CHOICES = {
@@ -162,6 +175,17 @@ function shape(rec) {
     claimNo:        f[F.claimNo] || '',
     filedBy:        f[F.filedBy] || '',
     filedAt:        f[F.filedAt] || '',
+    stage:          sel(f[F.stage]) || 'Open',
+    history:        f[F.history] || '',
+    fileSubmittedBy: f[F.fileSubBy] || '',
+    fileSubmittedAt: f[F.fileSubAt] || '',
+    verifiedBy:     f[F.verifiedBy] || '',
+    verifiedAt:     f[F.verifiedAt] || '',
+    approvedBy:     f[F.approvedBy] || '',
+    approvedAt:     f[F.approvedAt] || '',
+    sentBackNote:   f[F.sentBackNote] || '',
+    paidDate:       f[F.paidDate] || '',
+    paidAmount:     f[F.paidAmount] != null ? f[F.paidAmount] : null,
     createdTime:    rec.createdTime,
   };
 }
@@ -364,20 +388,93 @@ async function upsertItem(row, item, fields) {
     fields: Object.assign({ [FF.key]: itemKey(row.mvaNo, item), [FF.mva]: [row.id], [FF.mvaNo]: row.mvaNo, [FF.item]: item }, fields) }) });
 }
 
-// The patroller who filed it (or the patroller named on it) owns the MVA up to
-// filing with insurance; supervisors and admins see and help with every one.
-function ownsMva(row, caller) {
-  if (caller.isAdmin) return true;
-  const me = String(caller.name || '').trim().toLowerCase();
-  return !!me && [row.patroller, row.submittedBy].some(n => String(n || '').trim().toLowerCase() === me);
+// ── Who may see and act on an accident file (2026-10-06) ─────────────────────
+// Troy: "the mva file will go to the manager for verification, then the Operations
+// Manager (Mike Park) for approval, then it will be sent to the Claims Manager (Jay
+// McInnis) who will process the claim with the insurance company."
+//   · the patroller (Patroller or Submitted By) builds it while it is Open / Sent back;
+//   · the verifier is the patroller's Manager on their Employees record — with no
+//     manager on file, the Operations Manager verifies;
+//   · the approver and the claims manager are named in MVA File Roles, so the
+//     people can change without a code change;
+//   · an admin (isAdmin, unchanged) can see and do everything.
+const T_ROLES = process.env.MVA_ROLES_TABLE || 'tblN3F3YU9lg0K6Fz';
+const RF = { role: 'fldR6WX7zZziNhIEH', emp: 'fldcd2tacVtpOaA0P' };
+const EMP_MANAGER = 'fld06i7CJWbkIbCZA';
+const norm = n => String(n || '').trim().toLowerCase();
+const STAGES = ['Open', 'Awaiting verification', 'Awaiting approval', 'With claims', 'Filed with insurance', 'Paid', 'Sent back'];
+const EDITABLE = ['Open', 'Sent back'];
+async function team(ctx) {
+  ctx = ctx || {};
+  if (ctx.team) return ctx.team;
+  const people = []; let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '100'); qs.set('returnFieldsByFieldId', 'true');
+    for (const k of ['name', 'email', 'active']) qs.append('fields[]', L.EF[k]);
+    qs.append('fields[]', EMP_MANAGER);
+    if (offset) qs.set('offset', offset);
+    const page = await airtable(`${L.EMP_BASE}/${encodeURIComponent(L.EMP_TABLE)}?${qs}`);
+    for (const r of page.records || []) {
+      const f = r.fields || {}, m = f[EMP_MANAGER];
+      people.push({ name: f[L.EF.name] || '', email: String(f[L.EF.email] || '').trim(), active: sel(f[L.EF.active]) !== 'Inactive',
+        manager: Array.isArray(m) ? String((m[0] && (m[0].name || m[0])) || '') : String(m || '') });
+    }
+    offset = page.offset;
+  } while (offset);
+  const roles = { ops: '', claims: '' };
+  try {
+    const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true');
+    const page = await airtable(`${BASE}/${T_ROLES}?${qs}`);
+    for (const r of page.records || []) {
+      const f = r.fields || {}, role = norm(f[RF.role]);
+      if (role === 'operations manager') roles.ops = String(f[RF.emp] || '').trim();
+      if (role === 'claims manager') roles.claims = String(f[RF.emp] || '').trim();
+    }
+  } catch (_) { /* no roles table: only admins approve / handle claims */ }
+  const byName = {}; for (const p of people) byName[norm(p.name)] = p;
+  ctx.team = { people, roles, byName,
+    emailOf: n => ((byName[norm(n)] || {}).email || ''),
+    managerOf: n => ((byName[norm(n)] || {}).manager || '') };
+  return ctx.team;
 }
-async function loadOwned(id, caller) {
+// The verifier's name for this MVA ('' if nobody — then the approver verifies).
+function verifierName(row, t) { return t.managerOf(row.patroller) || t.managerOf(row.submittedBy) || t.roles.ops || ''; }
+function accessFor(row, caller, t) {
+  const me = norm(caller.name);
+  const a = {
+    admin: !!caller.isAdmin,
+    own: !!me && [row.patroller, row.submittedBy].some(n => norm(n) === me),
+    verifier: !!me && norm(verifierName(row, t)) === me,
+    approver: !!me && norm(t.roles.ops) === me,
+    claims: !!me && norm(t.roles.claims) === me,
+  };
+  a.view = a.admin || a.own || a.verifier || a.approver || a.claims;
+  a.edit = a.admin || (a.own && EDITABLE.includes(row.stage));
+  // What this person is being asked to do with it now.
+  a.action = row.stage === 'Awaiting verification' && (a.verifier || a.admin) ? 'verify'
+    : row.stage === 'Awaiting approval' && (a.approver || a.admin) ? 'approve'
+    : row.stage === 'With claims' && (a.claims || a.admin) ? 'file'
+    : row.stage === 'Filed with insurance' && (a.claims || a.admin) ? 'paid'
+    : EDITABLE.includes(row.stage) && (a.own || a.admin) ? 'build' : '';
+  return a;
+}
+function ownsMva(row, caller) {   // kept for callers that only know the patroller rule
+  if (caller.isAdmin) return true;
+  const me = norm(caller.name);
+  return !!me && [row.patroller, row.submittedBy].some(n => norm(n) === me);
+}
+async function loadOwned(id, caller, ctx) {
   if (!id || !/^rec[A-Za-z0-9]{14}$/.test(String(id))) return null;
   let rec; try { rec = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(id)}?returnFieldsByFieldId=true`); }
   catch (e) { if (e.status === 404 || e.status === 403) return null; throw e; }
   const row = shape(rec);
-  return ownsMva(row, caller) ? row : null;
+  const t = await team(ctx);
+  row.access = accessFor(row, caller, t);
+  row.verifier = verifierName(row, t);
+  return row.access.view ? row : null;
 }
+const canEdit = row => !!(row && row.access && row.access.edit);
 const NOT_FOUND = { error: 'MVA not found' };
 
 async function fetchRows({ mine, who }) {
@@ -420,20 +517,27 @@ module.exports = async function handler(req, res) {
       const id = req.query?.id;
       if (id) {
         // Not theirs, or no such record: the same 404, so a guessed id says nothing.
-        const row = await loadOwned(id, caller);
+        const ctx = {};
+        const row = await loadOwned(id, caller, ctx);
         if (!row) return res.status(404).json(NOT_FOUND);
         res.setHeader('Cache-Control', 'no-store');
-        return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin });
+        return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
+          photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
       }
-      const mine = String(req.query?.mine || '') === '1' || !caller.isAdmin;
+      // Anyone on the file's route (a manager of someone, the approver, the claims
+      // manager) reads the lot and keeps what they may see; a patroller only theirs.
+      const ctx = {}, t = await team(ctx), me = norm(caller.name);
+      const reviewer = !!me && (norm(t.roles.ops) === me || norm(t.roles.claims) === me || t.people.some(p => norm(p.manager) === me));
+      const mine = !caller.isAdmin && !reviewer;
       const recs = await fetchRows({ mine, who: caller.name });
-      const rows = recs.map(shape);
+      const rows = recs.map(shape).filter(r => { r.access = accessFor(r, caller, t); r.verifier = verifierName(r, t); return r.access.view; });
       // Folder progress for the list — one read of the folder table.
       let all = []; try { all = rows.length ? await folderRows('') : []; } catch (_) { all = []; }
       const by = {}; for (const r of all) { const f = r.fields || {}; (by[f[FF.mvaNo]] = by[f[FF.mvaNo]] || []).push(r); }
       for (const r of rows) { const v = folderView(r, by[r.mvaNo] || []); r.folderDone = v.done; r.folderTotal = v.total; }
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ rows, scope: mine ? 'mine' : 'all', items: FOLDER });
+      return res.status(200).json({ rows, scope: caller.isAdmin ? 'all' : reviewer ? 'review' : 'mine', items: FOLDER,
+        roles: { ops: t.roles.ops, claims: t.roles.claims } });
     }
 
     const body = L.parseBody(req);
@@ -456,8 +560,9 @@ module.exports = async function handler(req, res) {
       const row = await loadOwned(body.id, caller);
       if (!row) return res.status(404).json(NOT_FOUND);
       if (!ITEMS.includes(body.item)) return res.status(400).json({ error: 'Unknown folder item' });
-      if (row.filedDate && !caller.isAdmin)
-        return res.status(409).json({ error: 'This MVA has been filed with insurance — the folder is closed. Ask a supervisor if something needs changing.' });
+      if (!canEdit(row))
+        return res.status(409).json({ error: row.access.own ? 'The accident file has been submitted (' + row.stage + ') — it can only be changed if it is sent back to you.'
+                                                            : 'Only the patroller builds the folder — send it back with a note if something is missing.' });
       const now = new Date().toISOString();
       const who = { [FF.updatedBy]: caller.name || '', [FF.updatedAt]: now };
       if (body.action === 'folder') {
@@ -482,7 +587,7 @@ module.exports = async function handler(req, res) {
         await airtable(`${BASE}/${T_FOLDER}/${hit.id}`, { method: 'PATCH',
           body: JSON.stringify({ returnFieldsByFieldId: true, fields: Object.assign({ [FF.files]: keep }, who) }) });
       } else return res.status(400).json({ error: 'Unknown action' });
-      return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin });
+      return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin, photos: await photosFor(row) });
     }
 
     if (req.method === 'POST') {
@@ -549,30 +654,17 @@ module.exports = async function handler(req, res) {
 
     if (req.method === 'PATCH') {
       if (!body.id) return res.status(400).json({ error: 'id is required' });
-      const own = await loadOwned(body.id, caller);
+      const ctx = {};
+      const own = await loadOwned(body.id, caller, ctx);
       if (!own) return res.status(404).json(NOT_FOUND);
+      if (body.step) return step(own, body, caller, ctx, res);
       const f = {};
-      // Filed with insurance — the patroller's last step. Only once the folder
-      // is complete; a supervisor can file regardless (and can clear it).
-      if (body.filed !== undefined) {
-        if (body.filed === null) {
-          if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can reopen a filed MVA.' });
-          Object.assign(f, { [F.filedDate]: null, [F.filedInsurer]: '', [F.claimNo]: '', [F.filedBy]: '', [F.filedAt]: null });
-        } else {
-          const date = String(body.filed.date || '');
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'The date it was filed is required' });
-          if (!String(body.filed.insurer || '').trim()) return res.status(400).json({ error: 'The insurance company is required' });
-          const v = folderView(own, await folderRows(own.mvaNo));
-          const missing = v.items.filter(i => !i.done).map(i => i.item);
-          if (missing.length && !caller.isAdmin)
-            return res.status(409).json({ error: 'The folder is not complete yet: ' + missing.join(', '), missing });
-          Object.assign(f, { [F.filedDate]: date, [F.filedInsurer]: String(body.filed.insurer).trim().slice(0, 200),
-            [F.claimNo]: String(body.filed.claimNo || '').trim().slice(0, 100), [F.filedBy]: caller.name || '', [F.filedAt]: new Date().toISOString() });
-        }
-      }
       // The patroller who filed it can add the DMT work order number; status
       // changes are a supervisor action.
-      if (body.dmtWo !== undefined) f[F.dmtWo] = body.dmtWo;
+      if (body.dmtWo !== undefined) {
+        if (!canEdit(own)) return res.status(409).json({ error: 'The accident file has been submitted — it can only be changed if it is sent back.' });
+        f[F.dmtWo] = body.dmtWo;
+      }
       if (body.status !== undefined) {
         if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can change the status.' });
         if (CHOICES.statuses.includes(body.status)) f[F.status] = body.status;
@@ -581,7 +673,8 @@ module.exports = async function handler(req, res) {
       const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(body.id)}`, {
         method: 'PATCH', body: JSON.stringify({ fields: f, returnFieldsByFieldId: true }),
       });
-      return res.status(200).json({ row: shape(updated) });
+      const out = shape(updated); out.access = own.access; out.verifier = own.verifier;
+      return res.status(200).json({ row: out });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -591,6 +684,148 @@ module.exports = async function handler(req, res) {
   }
 };
 
+// ── The route: submit → verify → approve → filed → paid; send back at any step ──
+const T_AR = process.env.MVA_AR_TABLE || 'tblShwnpWGogKaZxG';
+const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repair: 'fldmEpRePHQOxRBkv',
+  licence: 'fld3jQnLxu5n5ggO2', plate: 'fld6VmNkhtBnI9H1K', insurance: 'fldgtdy42gUHjO4We' };
+const isImg = a => /^image\//.test(a.type || '') || /\.(jpe?g|png|webp|heic|gif)$/i.test(a.filename || '');
+// Every photo in the file, in one place — "Photos are of the utmost importance for
+// claims to be processed quickly with insurance companies" (Troy).
+async function photosFor(row) {
+  const out = [];
+  const add = (src, list) => arr(list).forEach(a => out.push({ source: src, id: a.id, url: a.url, filename: a.filename || '',
+    thumb: a.thumbnails?.large?.url || a.thumbnails?.small?.url || a.thumb || '' }));
+  add('MVA notification', row.photos);
+  try {
+    const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true'); qs.set('maxRecords', '1');
+    qs.set('filterByFormula', `{Report No.}='${String(row.mvaNo + '-AR').replace(/'/g, "\\'")}'`);
+    const ar = ((await airtable(`${BASE}/${T_AR}?${qs}`)).records || [])[0];
+    if (ar) { const f = ar.fields || {};
+      add('Accident report — accident', f[AR.accident]); add('Accident report — repairs', f[AR.repair]);
+      add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Insurance card', f[AR.insurance]); }
+  } catch (_) { /* the photos panel is a convenience; never fail the read over it */ }
+  for (const r of await folderRows(row.mvaNo)) {
+    const f = r.fields || {};
+    add('Folder — ' + (f[FF.item] || ''), arr(f[FF.files]).filter(isImg));
+  }
+  const count = s => out.filter(p => s.test(p.source)).length;
+  return { list: out, accident: count(/^(MVA notification|Accident report — accident|Folder — Accident photos)/),
+           repair: count(/^(Accident report — repairs|Folder — Photos of the completed repairs)/), total: out.length };
+}
+const stamp = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).replace(',', '');
+const histLine = (row, who, what) => (row.history ? row.history + '\n' : '') + `${stamp()} — ${who || '?'} — ${what}`;
+const WORKFLOW_SWITCH = 'MVA file workflow';
+
+async function sendStep(row, to, subject, lead, t) {
+  const real = [...new Set(to.filter(Boolean).map(e => e.trim()))];
+  const html = stepHtml(row, lead);
+  let sw = { id: null, mode: 'Off' };
+  try { sw = await C.switchFor(WORKFLOW_SWITCH); } catch (_) { sw = { id: null, mode: 'Off' }; }
+  let sent = [];
+  if (sw.mode === 'Everyone' && real.length) sent = await L.sendMail({ to: real, subject, html });
+  else if (sw.mode === 'Owner test') {
+    let owners = []; try { owners = C.owners(await C.directory()); } catch (_) { owners = []; }
+    if (owners.length) sent = await L.sendMail({ to: owners, subject: '[TEST] ' + subject, html: stepTestBanner(real) + html });
+  }
+  await C.stampSwitch(sw, `${row.mvaNo}: ${subject} — ${sw.mode}${real.length ? ' — for ' + real.join(', ') : ''}`).catch(() => {});
+  return { mode: sw.mode, to: real, sent };
+}
+function stepTestBanner(real) {
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FAF0DA;border-left:4px solid #B7791F;padding:12px 16px;margin-bottom:12px;max-width:640px">
+    <b>Test.</b> The MVA file workflow is set to <b>Owner test</b> in the Road Patrol base (Patrol Notifications), so only you got this.
+    It would have gone to: ${esc(real.join(', ') || 'nobody — no address on file')}.</div>`;
+}
+function stepHtml(row, lead) {
+  const where = [row.route, row.km != null ? 'km ' + Number(row.km).toFixed(3) : '', row.direction].filter(Boolean).join(' · ');
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;max-width:640px">
+  <div style="background:#1E2B5E;color:#fff;padding:16px 20px;border-bottom:3px solid #C9A84C">
+    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.65)">MRDC Road Patrol · Accident file</div>
+    <div style="font-size:20px;font-weight:600;margin-top:2px">${esc(row.mvaNo)}</div></div>
+  <p style="margin:16px 0 8px">${lead}</p>
+  <p style="margin:0;color:#6B6B6B">${esc(where)}${row.patroller ? ' · ' + esc(row.patroller) : ''}</p>
+  <p style="margin-top:16px"><a href="${esc(APP_URL)}mvas.html?id=${encodeURIComponent(row.id)}" style="color:#15616D;font-weight:600">Open the accident file</a></p>
+</div>`;
+}
+
+async function step(row, body, caller, ctx, res) {
+  const t = await team(ctx), a = row.access, now = new Date().toISOString(), who = caller.name || '';
+  const go = async (fields) => {
+    const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(row.id)}`, {
+      method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields }) });
+    const out = shape(upd); out.access = accessFor(out, caller, t); out.verifier = verifierName(out, t);
+    return out;
+  };
+  const deny = (m) => res.status(403).json({ error: m });
+  const wrong = (m) => res.status(409).json({ error: m, stage: row.stage });
+  const stepName = String(body.step);
+
+  if (stepName === 'submit') {
+    if (!(a.own || a.admin)) return deny('Only the patroller submits the accident file.');
+    if (!EDITABLE.includes(row.stage)) return wrong('It has already been submitted (' + row.stage + ').');
+    const v = folderView(row, await folderRows(row.mvaNo));
+    const missing = v.items.filter(i => !i.done).map(i => i.item);
+    const ph = await photosFor(row);
+    if (!ph.accident) missing.push('Photos of the accident and damages (at least one)');
+    if (!ph.repair) missing.push('Photos of the completed repairs (at least one)');
+    if (missing.length) return res.status(409).json({ error: 'Not ready to submit: ' + missing.join(', '), missing });
+    const verifier = verifierName(row, t);
+    const out = await go({ [F.stage]: 'Awaiting verification', [F.fileSubBy]: who, [F.fileSubAt]: now, [F.sentBackNote]: '',
+      [F.history]: histLine(row, who, 'submitted for verification' + (verifier ? ' by ' + verifier : '')) });
+    const mail = await sendStep(out, [t.emailOf(verifier)], `MVA ${out.mvaNo} — accident file to verify`,
+      `${esc(who)} has submitted the accident file. It is waiting for <b>${esc(verifier || 'a manager')}</b> to verify it.`, t);
+    return res.status(200).json({ row: out, mail });
+  }
+  if (stepName === 'verify' || stepName === 'approve') {
+    const want = stepName === 'verify' ? 'Awaiting verification' : 'Awaiting approval';
+    if (row.stage !== want) return wrong('It is not waiting for that (' + row.stage + ').');
+    if (stepName === 'verify' && !(a.verifier || a.admin)) return deny('Only ' + (row.verifier || 'the patroller\'s manager') + ' verifies this file.');
+    if (stepName === 'approve' && !(a.approver || a.admin)) return deny('Only ' + (t.roles.ops || 'the Operations Manager') + ' approves accident files.');
+    const next = stepName === 'verify' ? 'Awaiting approval' : 'With claims';
+    const fields = stepName === 'verify' ? { [F.verifiedBy]: who, [F.verifiedAt]: now } : { [F.approvedBy]: who, [F.approvedAt]: now };
+    const out = await go(Object.assign(fields, { [F.stage]: next, [F.history]: histLine(row, who, stepName === 'verify' ? 'verified' : 'approved') }));
+    const to = stepName === 'verify' ? t.roles.ops : t.roles.claims;
+    const mail = await sendStep(out, [t.emailOf(to)], `MVA ${out.mvaNo} — accident file ${stepName === 'verify' ? 'to approve' : 'approved — to file with insurance'}`,
+      stepName === 'verify' ? `${esc(who)} has verified the accident file. It is waiting for <b>${esc(to || 'the Operations Manager')}</b> to approve it.`
+                            : `${esc(who)} has approved the accident file. <b>${esc(to || 'The Claims Manager')}</b> can now process the claim with the insurance company.`, t);
+    return res.status(200).json({ row: out, mail });
+  }
+  if (stepName === 'sendBack') {
+    const note = String(body.note || '').trim();
+    if (!note) return res.status(400).json({ error: 'Say what needs fixing — the note goes to the patroller.' });
+    const mayAt = { 'Awaiting verification': a.verifier, 'Awaiting approval': a.approver, 'With claims': a.claims, 'Filed with insurance': a.claims };
+    if (!(row.stage in mayAt)) return wrong('Only a submitted file can be sent back.');
+    if (!(mayAt[row.stage] || a.admin)) return deny('It is not with you (' + row.stage + ').');
+    const out = await go({ [F.stage]: 'Sent back', [F.sentBackNote]: note.slice(0, 5000),
+      [F.history]: histLine(row, who, 'sent back: ' + note.replace(/\s+/g, ' ').slice(0, 300)) });
+    const mail = await sendStep(out, [t.emailOf(row.patroller) || row.patrollerEmail], `MVA ${out.mvaNo} — accident file sent back`,
+      `${esc(who)} has sent the accident file back: <b>${esc(note)}</b>`, t);
+    return res.status(200).json({ row: out, mail });
+  }
+  if (stepName === 'filed') {
+    if (!(a.claims || a.admin)) return deny('Only ' + (t.roles.claims || 'the Claims Manager') + ' files the claim.');
+    if (row.stage !== 'With claims') return wrong('It is not with claims yet (' + row.stage + ').');
+    const fl = body.filed || {}, date = String(fl.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'The date it was filed is required' });
+    if (!String(fl.insurer || '').trim()) return res.status(400).json({ error: 'The insurance company is required' });
+    const out = await go({ [F.stage]: 'Filed with insurance', [F.filedDate]: date, [F.filedInsurer]: String(fl.insurer).trim().slice(0, 200),
+      [F.claimNo]: String(fl.claimNo || '').trim().slice(0, 100), [F.filedBy]: who, [F.filedAt]: now,
+      [F.history]: histLine(row, who, `filed with ${String(fl.insurer).trim()}${fl.claimNo ? ' (claim ' + String(fl.claimNo).trim() + ')' : ''}`) });
+    return res.status(200).json({ row: out });
+  }
+  if (stepName === 'paid') {
+    if (!(a.claims || a.admin)) return deny('Only ' + (t.roles.claims || 'the Claims Manager') + ' records the payment.');
+    if (row.stage !== 'Filed with insurance') return wrong('It has not been filed yet (' + row.stage + ').');
+    const pd = body.paid || {}, date = String(pd.date || ''), amount = pd.amount === '' || pd.amount == null ? null : Number(pd.amount);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'The date the payment was received is required' });
+    if (amount != null && !(amount >= 0)) return res.status(400).json({ error: 'The amount must be a number' });
+    const out = await go({ [F.stage]: 'Paid', [F.paidDate]: date, [F.paidAmount]: amount,
+      [F.history]: histLine(row, who, 'payment received' + (amount != null ? ' $' + amount.toFixed(2) : '')) });
+    return res.status(200).json({ row: out });
+  }
+  return res.status(400).json({ error: 'Unknown step' });
+}
+
 // Shared with api/accident.js (the Accident Report + Proof of Repairs, 2026-10-06):
 // the same ownership rule and the same folder rows.
-module.exports.lib = { BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, shape, ownsMva, loadOwned, folderRows, folderView, upsertItem };
+module.exports.lib = { BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
