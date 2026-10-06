@@ -24,6 +24,7 @@
 
 const L = require('./_lib');
 const { requireCaller } = require('./_auth');
+const C = require('./_conditions');   // the Patrol Notifications switch (Off / Owner test / Everyone)
 
 const BASE  = process.env.MVA_BASE  || 'appMKaiabPAPx3JaV';
 const TABLE = process.env.MVA_TABLE || 'tblFnoVfyA9nSEOwk';
@@ -35,6 +36,7 @@ const APP_URL = process.env.PATROL_APP_URL || 'https://www.mrdc-htra.com/patrol/
 // code change. NOTE for deploy: the group must accept mail from the Resend
 // sender domain, or Microsoft 365 will reject it as an external sender.
 const NOTIFY_TO = process.env.MVA_NOTIFY_TO || 'AccidentGroup2@mrdc.ca';
+const SWITCH = 'MVA notification';   // the row in Patrol Notifications
 
 const F = {
   mvaNo:          'flddJ5v5jZ9rv4VWg', // primary
@@ -282,6 +284,12 @@ function notificationHtml(row) {
 </div>`;
 }
 
+function testBanner(real) {
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FAF0DA;border-left:4px solid #B7791F;padding:12px 16px;margin-bottom:12px;max-width:640px">
+    <b>Test.</b> The MVA notification is set to <b>Owner test</b> in the Road Patrol base (Patrol Notifications), so only you got this.
+    It would have gone to: ${esc(real.join(', ') || 'nobody')}.</div>`;
+}
+
 // The accident file folder — what the patroller builds so a claim can be filed.
 // The items are the Accident Claim Checklist (3.1.2 Accident Claim Work Summary).
 const FOLDER = ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages',
@@ -384,20 +392,35 @@ module.exports = async function handler(req, res) {
 
       // Email the distribution list. Best-effort: a mail failure must never lose
       // the notification the patroller just filed.
-      const sentTo = await L.sendMail({
-        to: recipients(NOTIFY_TO, row.patrollerEmail),
-        subject: `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`,
-        html: notificationHtml(row),
-      });
-      if (sentTo.length) {
-        const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(created.id)}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ returnFieldsByFieldId: true,
-            fields: { [F.notifiedAt]: new Date().toISOString(), [F.notified]: sentTo.join(', ') } }),
-        });
-        row = shape(upd);
+      // The switch decides who gets it (Patrol Notifications → "MVA notification").
+      // Owner test (Troy, 2026-10-06: "for testing this, please disable the send and
+      // only send to me"): the Owner gets a [TEST] copy naming who it would have
+      // reached; nobody else. Off, a missing row, or a switch that cannot be read:
+      // nothing is sent. Everyone: the Accident Group + the patroller.
+      const real = recipients(NOTIFY_TO, row.patrollerEmail);
+      const subject = `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`;
+      let sw = { id: null, mode: 'Off' };
+      try { sw = await C.switchFor(SWITCH); } catch (_) { sw = { id: null, mode: 'Off' }; }
+      let sentTo = [], note;
+      if (sw.mode === 'Everyone') {
+        sentTo = await L.sendMail({ to: real, subject, html: notificationHtml(row) });
+        note = sentTo.join(', ');
+      } else if (sw.mode === 'Owner test') {
+        let to = [];
+        try { to = C.owners(await C.directory()); } catch (_) { to = []; }
+        if (to.length) sentTo = await L.sendMail({ to, subject: '[TEST] ' + subject, html: testBanner(real) + notificationHtml(row) });
+        note = `Owner test — sent to ${sentTo.join(', ') || 'nobody'}; would have gone to ${real.join(', ')}`;
+      } else {
+        note = `Off — not sent; would have gone to ${real.join(', ')}`;
       }
-      return res.status(200).json({ row, emailed: sentTo.length > 0, emailedTo: sentTo });
+      await C.stampSwitch(sw, `${row.mvaNo}: ${note}`).catch(() => {});
+      const upd = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(created.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ returnFieldsByFieldId: true,
+          fields: Object.assign({ [F.notified]: note }, sentTo.length ? { [F.notifiedAt]: new Date().toISOString() } : {}) }),
+      });
+      row = shape(upd);
+      return res.status(200).json({ row, emailed: sentTo.length > 0, emailedTo: sentTo, mode: sw.mode });
     }
 
     if (req.method === 'PATCH') {
