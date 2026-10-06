@@ -590,3 +590,7 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
+
+// Shared with api/accident.js (the Accident Report + Proof of Repairs, 2026-10-06):
+// the same ownership rule and the same folder rows.
+module.exports.lib = { BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, shape, ownsMva, loadOwned, folderRows, folderView, upsertItem };
