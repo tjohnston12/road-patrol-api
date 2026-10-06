@@ -124,6 +124,23 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   eq('submit with fields missing: 400', r.status, 400);
   ok('…naming them', /Division/.test(r.json.error) && /Description of damages/.test(r.json.error), r.json.error);
   ok('…the folder is not ticked', !Object.keys(DB[T.folder]).length);
+  /* 3b — the photos it needs (Troy: plate — truck and trailer if there is one — licence,
+     insurance card, in addition to the damage) */
+  const photo = (kind, name) => call('POST', { mva: mid, action: 'photo', kind, filename: name, contentType: 'image/jpeg', data: 'eA==' });
+  r = await call('POST', { mva: mid, report: Object.assign({}, FULL, { hitRun: false }), submit: true });
+  eq('all fields but no photos: 400 naming the four photos', [r.status, r.json.missing],
+     [400, ['Photos of the accident and damages', "Photo of the driver's licence", 'Photo of the licence plate', 'Photo of the insurance card']]);
+  await photo('accident', 'scene.jpg'); await photo('licence', 'dl.jpg'); await photo('plate', 'plate.jpg');
+  r = await call('POST', { mva: mid, report: { hasTrailer: true }, submit: true });
+  eq('with a trailer the trailer plate is needed too', r.json.missing, ["Photo of the trailer's licence plate", 'Photo of the insurance card']);
+  r = await call('POST', { mva: mid, report: { hitRun: true }, submit: false });
+  r = await call('POST', { mva: mid, report: {}, submit: true });
+  eq('a hit & run needs only the damage photos', [r.status, r.json.report.status], [200, 'Submitted']);
+  DB[T.ar][Object.keys(DB[T.ar])[0]].fields.fldRa0KV1HJzLMOjH = 'Draft';
+  for (const k of Object.keys(DB[T.folder])) delete DB[T.folder][k];
+  await call('POST', { mva: mid, report: { hitRun: false } });
+  await photo('trailer', 'trailer.jpg'); await photo('insurance', 'card.jpg');
+  eq('the trailer plate goes to its own field', uploads.slice(-2)[0].fieldId, 'fldWb06wd1RE8uuiq');
   r = await call('POST', { mva: mid, report: FULL, submit: true });
   eq('a complete report submits', [r.status, r.json.report.status, r.json.report.submittedBy], [200, 'Submitted', 'Tom Gibson']);
   const fr = Object.values(DB[T.folder])[0];
@@ -133,12 +150,13 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   eq('it can still be added to after submitting', [r.json.report.officer, r.json.report.status], ['Cst. Smith', 'Submitted']);
 
   /* 4 — photos */
-  r = await call('POST', { mva: mid, action: 'photo', kind: 'licence', filename: 'dl.jpg', contentType: 'image/jpeg', data: 'eA==' });
-  eq('a licence photo goes to its field', [uploads[0].fieldId, r.json.report.photos.licence.map(p => p.filename)], ['fld3jQnLxu5n5ggO2', ['dl.jpg']]);
+  r = await call('POST', { mva: mid, action: 'photo', kind: 'licence', filename: 'dl2.jpg', contentType: 'image/jpeg', data: 'eA==' });
+  const lic = r.json.report.photos.licence;
+  eq('a second licence (another vehicle) is added beside the first', [uploads.slice(-1)[0].fieldId, r.json.report.photos.licence.map(p => p.filename)], ['fld3jQnLxu5n5ggO2', ['dl.jpg', 'dl2.jpg']]);
   r = await call('POST', { mva: mid, action: 'photo', kind: 'nope', data: 'eA==' });
   eq('an unknown photo kind: 400', r.status, 400);
-  r = await call('POST', { mva: mid, action: 'photoRemove', kind: 'licence', fileId: 'att1' });
-  eq('…and can be removed', r.json.report.photos.licence.length, 0);
+  r = await call('POST', { mva: mid, action: 'photoRemove', kind: 'licence', fileId: lic[0].id });
+  eq('…and one can be removed (the other kept)', r.json.report.photos.licence.map(p => p.id), [lic[1].id]);
 
   /* 5 — proof of repairs */
   r = await call('POST', { mva: mid, repairs: { date: '2026-10-15', notes: 'Replaced 10 pieces' }, repairsDone: true });
