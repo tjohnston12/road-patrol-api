@@ -52,7 +52,7 @@ function answer(rec, byId) {
   return { id: rec.id, createdTime: '2026-10-06T16:58:20.000Z', fields: out };
 }
 const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
-let FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [];
+let FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_RECS = [];
 // The Employees directory and MVA File Roles, as the route reads them.
 let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
   { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
@@ -67,6 +67,8 @@ const airtable = async (p, opt = {}) => {
     fldcHPqfxScpuUbZ6: { name: 'Active' }, fld06i7CJWbkIbCZA: e.manager || '' } })) };
   if (table === 'tblN3F3YU9lg0K6Fz') return { records: ROLES.map((r, i) => ({ id: 'recR' + i, fields: { fldR6WX7zZziNhIEH: r[0], fldcd2tacVtpOaA0P: r[1] } })) };
   if (table === 'tblShwnpWGogKaZxG') return { records: AR_RECS };
+  if (table === 'tblpMfPIXMJhFmuuw') { const pre = ((url.searchParams.get('filterByFormula') || '').match(/^FIND\('(.*)',\{Vehicle Ref\}\)=1$/) || [])[1];
+    return { records: VEH_RECS.filter(v => pre && v.fields.fldwfUp29kQs8NQI7.indexOf(pre) === 0) }; }
   if (table === T_FOLDER) {                                            // the folder rows: always asked for by id
     if (!byId) throw new Error('folder read/write without returnFieldsByFieldId');
     writes.push({ m, byId, table: 'folder' });
@@ -134,7 +136,7 @@ async function call(method, body, query) {
   await handler({ method, headers: { cookie: 'htra_session=x', origin: 'https://www.mrdc-htra.com' }, query: query || {}, body }, res);
   return { status, json };
 }
-const reset = () => { DB = {}; writes = []; mails = []; seq = 0; FOLDER_DB = {}; fseq = 0; uploads = []; AR_RECS = []; };
+const reset = () => { DB = {}; writes = []; mails = []; seq = 0; FOLDER_DB = {}; fseq = 0; uploads = []; AR_RECS = []; VEH_RECS = []; };
 const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', km: 303, direction: 'EB', route: 'Route 2',
   division: 'Western', patroller: 'Tom Gibson', vehicles: 2, damages: true, damageDesc: 'guiderail hit 10 pieces', summary: 'test entry' };
 
@@ -309,6 +311,13 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
   eq('the photos panel gathers every photo in the file', [r.json.photos.accident, r.json.photos.repair, r.json.photos.list.map(p => p.source)],
      [1, 1, ['Accident report — repairs', 'Folder — Accident photos and damages']]);
+  VEH_RECS = [{ id: 'recV3', fields: { fldwfUp29kQs8NQI7: '2026-10-06-303.000-EB-AR-V3', fldCOloDspNrByuT7: 3, fld3RVNUJQDkjFxpi: [{ id: 'attI3', url: 'https://x/i3.jpg' }] } },
+    { id: 'recV2', fields: { fldwfUp29kQs8NQI7: '2026-10-06-303.000-EB-AR-V2', fldCOloDspNrByuT7: 2, fld8jYrCXrGqsSm9N: [{ id: 'attL2', url: 'https://x/l2.jpg' }], fldl5T1V1XHzV5USf: [{ id: 'attP2', url: 'https://x/p2.jpg' }] } },
+    { id: 'recVX', fields: { fldwfUp29kQs8NQI7: '2026-10-06-999.000-WB-AR-V2', fldCOloDspNrByuT7: 2, fld8jYrCXrGqsSm9N: [{ id: 'attX', url: 'https://x/x.jpg' }] } }];
+  r = await call('GET', null, { id: mid });
+  eq('…with vehicle 2 and 3\'s photos, in order, and not another MVA\'s', r.json.photos.list.map(p => p.source),
+     ['Accident report — repairs', 'Vehicle 2 — driver\'s licence', 'Vehicle 2 — licence plate', 'Vehicle 3 — insurance card', 'Folder — Accident photos and damages']);
+  VEH_RECS = [];
   mails = [];
   session = S('Employee', 'Patroller', 'James Rodey');
   r = await P('submit');
