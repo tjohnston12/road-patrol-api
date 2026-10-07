@@ -5,8 +5,8 @@
 // The patrol vehicle from the fleet list (Troy, 2026-10-07). api/patrol.js:
 //  1. getFleet() reads Fleet DB Inventory: ACTIVE units in the 10 series (pickups) only —
 //     "patrollers only drive pickups 10 series" (Troy) — every page, fields by id, sorted by unit number; cached 10 minutes.
-//  2. ?meta=1 carries it as choices.fleet, and still carries the learned `vehicles` list
-//     (a spare or rental is typed).
+//  2. ?meta=1 carries it as choices.fleet, and the learned `vehicles` list from past reports —
+//     10-series pickup numbers only, so test entries and typos are not suggested.
 //  3. A Fleet DB that cannot be read gives an empty list; the meta call still answers.
 //  4. Saving a report stamps Vehicle Fleet Record = the matching unit's record id (dashes and
 //     spaces ignored), '' for a number not on the fleet, '' when the vehicle is cleared, and
@@ -37,6 +37,8 @@ const PAGE2 = [unit('recFLEETUNIT00021', '2121-46', 'Active', '21', 'Tandem', 'B
 
 const F_VEH = 'fldRAvwQ4q1rQQnRy', F_FLEET = 'fldrRoU6PzrdVHiOm', F_STATUS_NAME = 'In progress';
 let fleetCalls = [], fleetDown = false, writes = [], record = null;
+// What past reports hold today: test entries, a rental, typos, and real pickups.
+const LEARNED = ['TEST-0001', 'TEST-0010', 'R-4471', '2210-44', '1910-01', '2210-44', 'test', '1950-07', '2121-46', '710-07', '19100'];
 const airtable = async (p, opt = {}) => {
   const url = new URL('https://api.airtable.com/v0/' + p);
   const m = (opt.method || 'GET').toUpperCase();
@@ -46,7 +48,7 @@ const airtable = async (p, opt = {}) => {
     return url.searchParams.get('offset') ? { records: PAGE2 } : { records: PAGE1, offset: 'pg2' };
   }
   if (m === 'GET' && /\/rec/.test(url.pathname)) return record;
-  if (m === 'GET') return { records: url.searchParams.get('filterByFormula') ? [] : [{ id: 'recOLD', fields: { [F_VEH]: 'R-4471' } }] };
+  if (m === 'GET') return { records: url.searchParams.get('filterByFormula') ? [] : LEARNED.map((v, i) => ({ id: 'recOLD' + i, fields: { [F_VEH]: v } })) };
   const body = JSON.parse(opt.body); writes.push({ m, fields: body.fields });
   return { id: 'recREPORT00000001', fields: Object.assign({}, record ? record.fields : {}, body.fields) };
 };
@@ -89,7 +91,8 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     /* 2 */
     const r = await call('GET', null, { meta: '1' });
     eq('meta carries the fleet list', [r.code, (r.body.choices.fleet || []).length], [200, 3]);
-    eq('…and still the learned list (spares, rentals)', r.body.choices.vehicles, ['R-4471']);
+    eq('…and the numbers from past reports — 10-series pickups only (no TEST-…, no rental, no tandem)', r.body.choices.vehicles, ['1910-01', '2210-44', '710-07']);
+    ok('…the pickup pattern', ['1910-01', '2210-44', '710-07', '2310 23', '1010-204'].every(v => T.PICKUP_NO.test(v)) && !['TEST-0001', 'R-4471', '1950-07', '2121-46', '19100', '1910-'].some(v => T.PICKUP_NO.test(v)));
     /* 3 */
     T.resetFleetCache(); fleetDown = true;
     const r2 = await call('GET', null, { meta: '1' });
