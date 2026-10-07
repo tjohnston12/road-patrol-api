@@ -53,6 +53,7 @@ const F = {
   division:       'fldxSnElZ4qJ6baHr', // summer only
   depot:          'fld3gAxGzV1VTSDWn', // winter only
   vehicle:        'fldRAvwQ4q1rQQnRy',
+  vehicleFleet:   'fldrRoU6PzrdVHiOm', // Fleet DB Inventory record id, stamped by the server (2026-10-07)
   shiftStart:     'fldQvA6fxrGMzQX3F',
   shiftEnd:       'fld3evTcidYDyquje',
   routes:         'fldnh3pvj0twZu5Fe',
@@ -305,6 +306,7 @@ function shape(rec) {
     division:       sel(f[F.division]),
     depot:          sel(f[F.depot]),
     vehicle:        f[F.vehicle] || '',
+    vehicleFleet:   f[F.vehicleFleet] || '',
     shiftStart:     f[F.shiftStart] || '',
     shiftEnd:       f[F.shiftEnd] || '',
     shiftHours:     f[F.shiftHours] != null ? f[F.shiftHours] : null,
@@ -417,8 +419,63 @@ function toFields(b) {
   return f;
 }
 
+/* ---- The patrol vehicle from the fleet list (Troy, 2026-10-07) -------------------------
+   Fleet DB Inventory is the platform's vehicle list (claude/fleet-db-vehicle-list.md). The
+   form offers its ACTIVE road units — the patrol trucks first — and still takes a typed number
+   for a spare or a rental, which is why the learned list (getVehicles) stays as well. The unit
+   number stays the stored value; the Fleet DB record id is stamped beside it by the server
+   when the number matches an active unit, so a Fleet App can join on the real address. A Fleet
+   DB that cannot be read (token without that base, outage) gives an empty list and no stamp —
+   the report is never held up for it. */
+const FLEET_BASE  = process.env.FLEET_BASE  || 'appLoRJIahB87c2Mf';
+const FLEET_TABLE = process.env.FLEET_TABLE || 'tblNiXX7E11K4Gfzy';
+const FV = { unit: 'fldVL7P5cZaQO0lLM', status: 'fldY6lnC7p63eInFV', series: 'fldFia5obvtL7hNha', make: 'fldZL42bqcSC2Rrfx',
+  model: 'fld9h45yBxzvONcW9', designation: 'fldTGKBaLbEt97Ih6', depot: 'fld5A4dbfBx90FUGw' };
+// Road-going series only (pickups, one-tons, single axles, tandems, tractors) — not attachments.
+const ROAD_SERIES = ['10', '12', '20', '21', '60'];
+const FLEET_TTL_MS = 10 * 60 * 1000;
+let FLEET_CACHE = null;
+const normUnit = s => String(s || '').toUpperCase().replace(/[\s\-_.\/]/g, '');
+async function getFleet() {
+  if (FLEET_CACHE && Date.now() - FLEET_CACHE.at < FLEET_TTL_MS) return FLEET_CACHE.list;
+  try {
+    const out = [];
+    let offset;
+    do {
+      const qs = new URLSearchParams();
+      qs.set('pageSize', '100');
+      qs.set('returnFieldsByFieldId', 'true');
+      for (const k of Object.values(FV)) qs.append('fields[]', k);
+      qs.set('filterByFormula', `{Active / Retired}='Active'`);
+      if (offset) qs.set('offset', offset);
+      const page = await airtable(`${FLEET_BASE}/${FLEET_TABLE}?${qs}`);
+      for (const r of (page.records || [])) {
+        const f = r.fields || {};
+        const unit = String(f[FV.unit] || '').trim();
+        if (!unit || sel(f[FV.status]) !== 'Active' || !ROAD_SERIES.includes(sel(f[FV.series]))) continue;
+        out.push({ unit, recId: r.id, series: sel(f[FV.series]), designation: String(sel(f[FV.designation]) || '').trim(),
+          depot: sel(f[FV.depot]) || '', make: sel(f[FV.make]) || '', model: String(f[FV.model] || '').trim() });
+      }
+      offset = page.offset;
+    } while (offset);
+    out.sort((a, b) => a.unit.localeCompare(b.unit, 'en', { numeric: true }));
+    FLEET_CACHE = { at: Date.now(), list: out };
+    return out;
+  } catch (_) { return FLEET_CACHE ? FLEET_CACHE.list : []; }
+}
+// Stamp (or clear) the fleet record id whenever the vehicle number is being written.
+async function stampFleet(fields, vehicle) {
+  if (vehicle === undefined) return;
+  const want = normUnit(vehicle);
+  if (!want) { fields[F.vehicleFleet] = ''; return; }
+  const list = await getFleet();
+  if (!list.length) return;                                  // fleet unreadable: leave it alone
+  const hit = list.find(u => normUnit(u.unit) === want);
+  fields[F.vehicleFleet] = hit ? hit.recId : '';
+}
+
 async function getChoices() {
-  const [employees, vehicles] = await Promise.all([L.getEmployees(), getVehicles()]);
+  const [employees, vehicles, fleet] = await Promise.all([L.getEmployees(), getVehicles(), getFleet()]);
   const named = t => employees.filter(e => e.titles.some(x => t.includes(x)));
   // Summer: active only. Winter: keep inactive seasonal staff (see WINTER_TITLES).
   const summerPatrollers = named(SUMMER_TITLES).filter(e => e.active);
@@ -431,6 +488,7 @@ async function getChoices() {
     // Every active employee, so "someone else" can still be resolved to an email.
     patrollers: employees.filter(e => e.active).map(slim),
     vehicles,
+    fleet,
   };
 }
 
@@ -703,6 +761,7 @@ module.exports = async function handler(req, res) {
       if (existing) return res.status(200).json({ row: shape(existing), duplicate: true });
 
       const fields = toFields({ ...body, submittedBy: body.submittedBy || caller.name });
+      await stampFleet(fields, body.vehicle);
       fields[F.status] = isDraft ? 'In progress' : 'Submitted';
       if (!isDraft) fields[F.submittedAt] = new Date().toISOString();
       const created = await airtable(`${BASE}/${encodeURIComponent(TABLE)}`, {
@@ -778,6 +837,7 @@ module.exports = async function handler(req, res) {
       const fields = toFields({ ...body,
         ...(mergedDefs ? { deficiencyRows: mergedDefs } : {}),
         submittedBy: rec.fields?.[F.submittedBy] || caller.name });
+      await stampFleet(fields, body.vehicle);
       if (submitting) {
         fields[F.status] = 'Submitted';
         fields[F.submittedAt] = new Date().toISOString();
@@ -992,6 +1052,8 @@ module.exports.__test = {
   SUMMER_ROUTES, WINTER_WESTERN, WINTER_EASTERN, ALL_ROUTES,
   SUMMER_PRECIP, WINTER_PRECIP, CHOICES, routesFor, precipFor,
   SUMMER_TITLES, WINTER_TITLES, getChoices,
+  // the patrol vehicle from Fleet DB (2026-10-07)
+  getFleet, stampFleet, normUnit, ROAD_SERIES, FLEET_BASE, FLEET_TABLE, resetFleetCache: () => { FLEET_CACHE = null; },
   // section 7 — the deficiencies raised from the report
   F, cleanDef, cleanDefs, parseDefs, mergeDefs, defReady, deficiencyId,
   toFields, shape, raiseDeficiencies, MAX_DEFS, MAX_DESC, MAX_PHOTOS,
