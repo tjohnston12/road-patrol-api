@@ -82,11 +82,13 @@ const GOOD = { routes: ['Route 2'], fromKm: '257.2', toKm: 342, reason: 'Whiteou
   eq('…issued now, by the signed-in user unless named', [c.fields[X.A.issuedAt], c.fields[X.A.issuedBy], c.fields[X.A.issueEnteredBy]], [NOW.toISOString(), 'Tom Gibson', 'Tom Gibson']);
   ok('…an advisory id in Atlantic time', /^NTA-20270120-0125-[A-Z0-9]{4}$/.test(c.fields[X.A.id]), c.fields[X.A.id]);
   eq('routes are kept in the form\'s order', X.cleanIssue({ ...GOOD, routes: ['Route 8', 'Route 2'] }, caller, NOW).fields[X.A.routes], ['Route 2', 'Route 8']);
-  eq('the closure protocol is a type', X.cleanIssue({ ...GOOD, type: 'Highway Closed / Emergency Vehicles Only' }, caller, NOW).fields[X.A.type], 'Highway Closed / Emergency Vehicles Only');
+  // "we do not close our highways to travel, only the RCMP can do that" (Troy)
+  eq('one kind only: No Travel Advisory', X.TYPES, ['No Travel Advisory']);
+  ok('a closure is refused — that is the RCMP\'s, not MRDC\'s', /RCMP's call/.test(X.cleanIssue({ ...GOOD, type: 'Highway Closed / Emergency Vehicles Only' }, caller, NOW).error || ''));
   const err = b => (X.cleanIssue(b, caller, NOW).error || '');
   ok('no route is refused', /Pick the route/.test(err({ ...GOOD, routes: [] })));
   ok('an unknown route is refused', /Unknown route/.test(err({ ...GOOD, routes: ['Route 2', 'Route 99'] })));
-  ok('an unknown type is refused', /kind of advisory/.test(err({ ...GOOD, type: 'Bad' })));
+  ok('an unknown type is refused', /No Travel Advisory only/.test(err({ ...GOOD, type: 'Bad' })));
   ok('a missing km is refused', /from and to KM/.test(err({ ...GOOD, toKm: '' })));
   ok('a non-number km is refused', /from and to KM/.test(err({ ...GOOD, fromKm: 'exit 258' })));
   ok('the same km twice is refused', /same/.test(err({ ...GOOD, toKm: 257.2 })));
@@ -122,10 +124,11 @@ const GOOD = { routes: ['Route 2'], fromKm: '257.2', toKm: 342, reason: 'Whiteou
   eq('signed out: 401', (await call('GET', {})).code, 401);
   session = S('Tom Gibson');
   const meta = (await call('GET', { meta: '1' })).body;
-  eq('meta', [meta.routes, meta.types.length, meta.me, meta.patrollers], [['Route 1', 'Route 2', 'Route 7', 'Route 8'], 2, 'Tom Gibson', ['Tom Gibson', 'James Rodey']]);
+  eq('meta', [meta.routes, meta.types, meta.me, meta.patrollers], [['Route 1', 'Route 2', 'Route 7', 'Route 8'], ['No Travel Advisory'], 'Tom Gibson', ['Tom Gibson', 'James Rodey']]);
   let r = await call('POST', {}, { ...GOOD });
   eq('issue: 201, Active, emailed', [r.code, r.body.advisory.status, r.body.email.sent], [201, 'Active', 5]);
   ok('…the email says ISSUED, where, and why', MAIL[0] && /^NO TRAVEL ADVISORY ISSUED — Route 2 km 257\.2–342\.0 \(Exit 258 to Exit 339\)$/.test(MAIL[0].subject) && /Whiteout, zero visibility/.test(MAIL[0].html), MAIL[0] && MAIL[0].subject);
+  ok('…and says the Ops Centre puts it out on NB511', MAIL[0] && /contacts the Ops Centre, who put it out on NB511/.test(MAIL[0].html));
   ok('…and who it went to is on the record', /derek@x\.ca/.test(DB.adv[0].fields[X.A.issueEmailedTo]) && !!DB.adv[0].fields[X.A.issueEmailedAt]);
   const id = r.body.advisory.id;
   r = await call('GET', {});
@@ -138,6 +141,7 @@ const GOOD = { routes: ['Route 2'], fromKm: '257.2', toKm: 342, reason: 'Whiteou
   eq('lift (by someone else — the next shift): 200, same record, Lifted by them', [r.code, r.body.advisory.id, r.body.advisory.status, r.body.advisory.liftedBy], [200, id, 'Lifted', 'Derek Melanson']);
   ok('…ONE record, not two', DB.adv.length === 1);
   ok('…the lift email says LIFTED and who', MAIL[1] && /^NO TRAVEL ADVISORY LIFTED — Route 2/.test(MAIL[1].subject) && /Lifted .* by Derek Melanson/.test(MAIL[1].html) && /Visibility back/.test(MAIL[1].html), MAIL[1] && MAIL[1].subject);
+  ok('…lift email: the Ops Centre has it taken down from NB511', MAIL[1] && /have it taken down from NB511/.test(MAIL[1].html));
   ok('…and recorded', /derek@x\.ca/.test(DB.adv[0].fields[X.A.liftEmailedTo]));
   r = await call('POST', { id, action: 'lift' }, {});
   ok('lifting twice: 409, says when and who', r.code === 409 && /Already lifted .* by Derek Melanson/.test(r.body.error), JSON.stringify(r.body));
