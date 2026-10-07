@@ -434,6 +434,7 @@ const FV = { unit: 'fldVL7P5cZaQO0lLM', status: 'fldY6lnC7p63eInFV', series: 'fl
   model: 'fld9h45yBxzvONcW9', designation: 'fldTGKBaLbEt97Ih6', depot: 'fld5A4dbfBx90FUGw' };
 // 10 series = pickups. Troy, 2026-10-07: "patrollers only drive pickups 10 series".
 const PATROL_SERIES = ['10'];
+const PICKUP_NO = /^\d{1,2}10[-\s]?\d{2,3}$/;
 const FLEET_TTL_MS = 10 * 60 * 1000;
 let FLEET_CACHE = null, FLEET_ERROR = '';
 const normUnit = s => String(s || '').toUpperCase().replace(/[\s\-_.\/]/g, '');
@@ -512,7 +513,10 @@ async function getVehicles() {
     const set = new Set();
     for (const rec of (page.records || [])) {
       const v = String(rec.fields?.[F.vehicle] || '').trim();
-      if (v) set.add(v);
+      // Only numbers shaped like a 10-series pickup (1910-01, 2210-44, 710-07): patrollers only
+      // drive those (Troy, 2026-10-07), and it keeps test entries ("TEST-0001") and one-off
+      // typos out of everyone's suggestions. Anything can still be typed.
+      if (PICKUP_NO.test(v)) set.add(v);
     }
     return [...set].sort();
   } catch (_) { return []; }
@@ -1061,7 +1065,7 @@ module.exports.__test = {
   SUMMER_PRECIP, WINTER_PRECIP, CHOICES, routesFor, precipFor,
   SUMMER_TITLES, WINTER_TITLES, getChoices,
   // the patrol vehicle from Fleet DB (2026-10-07)
-  getFleet, stampFleet, normUnit, PATROL_SERIES, FLEET_BASE, FLEET_TABLE, resetFleetCache: () => { FLEET_CACHE = null; },
+  getFleet, stampFleet, normUnit, PATROL_SERIES, PICKUP_NO, getVehicles, FLEET_BASE, FLEET_TABLE, resetFleetCache: () => { FLEET_CACHE = null; },
   // section 7 — the deficiencies raised from the report
   F, cleanDef, cleanDefs, parseDefs, mergeDefs, defReady, deficiencyId,
   toFields, shape, raiseDeficiencies, MAX_DEFS, MAX_DESC, MAX_PHOTOS,
