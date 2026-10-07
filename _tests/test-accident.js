@@ -20,9 +20,9 @@ let pass = 0, fail = 0; const failures = [];
 const ok = (n, c, x) => { if (c) pass++; else { fail++; failures.push(n + (x ? ` — ${x}` : '')); } };
 const eq = (n, g, w) => ok(n, JSON.stringify(g) === JSON.stringify(w), `got ${JSON.stringify(g)} want ${JSON.stringify(w)}`);
 
-const T = { mva: 'tblFnoVfyA9nSEOwk', folder: 'tbl9VS7Ggu8UKCeXU', ar: 'tblShwnpWGogKaZxG' };
+const T = { mva: 'tblFnoVfyA9nSEOwk', folder: 'tbl9VS7Ggu8UKCeXU', ar: 'tblShwnpWGogKaZxG', veh: 'tblpMfPIXMJhFmuuw' };
 let DB, seq, uploads, writes;
-const reset = () => { DB = { [T.mva]: {}, [T.folder]: {}, [T.ar]: {} }; seq = 0; uploads = []; writes = []; };
+const reset = () => { DB = { [T.mva]: {}, [T.folder]: {}, [T.ar]: {}, [T.veh]: {} }; seq = 0; uploads = []; writes = []; };
 const SELECTS = new Set(['fldgIA9dpSAllebrF', 'fldCbe3KQ2xm7Dgs3', 'fldypZa9PK1hyT6OU', 'fldS51U7n89nvnC3z', 'fldlnthwLcdTATYaF',
   'fldJSY1h0VeUp5akf', 'fldWdeQqgXx7ycBmo', 'fld0XMlrjJ5atFqoH', 'fldRa0KV1HJzLMOjH']);
 const MULTI = new Set(['fldVkA60qvqGoK9Zk', 'fldlNYDv5nAT6dAo0']);
@@ -49,6 +49,8 @@ const airtable = async (p, opt = {}) => {
   if (m !== 'GET') writes.push({ table, m, byId });
   if (m === 'GET' && !id) {
     const f = url.searchParams.get('filterByFormula') || '';
+    const fm = f.match(/^FIND\('(.*)',\{Vehicle Ref\}\)=1$/);
+    if (fm) return { records: Object.values(tb).filter(r => String(r.fields.fldwfUp29kQs8NQI7 || '').indexOf(fm[1]) === 0).map(r => answer(r, byId)) };
     const mm = f.match(/^\{(.+?)\}='(.*)'$/);
     const field = mm && { 'Report No.': 'fldK8gqs6PfZAXNs9', 'MVA No.': table === T.folder ? 'fldZ6jtW2k7LqxPe0' : 'flddJ5v5jZ9rv4VWg' }[mm[1]];
     return { records: Object.values(tb).filter(r => !field || r.fields[field] === mm[2]).map(r => answer(r, byId)) };
@@ -64,7 +66,7 @@ require.cache[libPath] = { id: libPath, filename: libPath, loaded: true, exports
   num: x => (x === '' || x == null ? undefined : Number(x)), esc: s => String(s == null ? '' : s),
   cors: () => false, parseBody: req => (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})),
   getEmployees: async () => [], getPatrollers: async () => [], sendMail: async () => [], sendMailDetailed: async () => ({}),
-  uploadAttachment: async (o) => { uploads.push(o); const rec = DB[T.ar][o.recordId]; (rec.fields[o.fieldId] = rec.fields[o.fieldId] || []).push({ id: 'att' + uploads.length, url: 'https://x/' + o.filename, filename: o.filename }); },
+  uploadAttachment: async (o) => { uploads.push(o); const rec = DB[T.ar][o.recordId] || DB[T.veh][o.recordId]; (rec.fields[o.fieldId] = rec.fields[o.fieldId] || []).push({ id: 'att' + uploads.length, url: 'https://x/' + o.filename, filename: o.filename }); },
 } };
 require.cache[condPath] = { id: condPath, filename: condPath, loaded: true, exports: {
   switchFor: async () => ({ id: null, mode: 'Off' }), directory: async () => ({ people: [], lists: [] }), owners: () => [], stampSwitch: async () => {} } };
@@ -91,7 +93,7 @@ function seedMva(o) {
   return id;
 }
 const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '2026-10-06T16:56:00.000Z', route: 'Route 2', km: 303,
-  direction: 'EB', vehicles: 2, injuries: 'Unknown', fatality: 'No', roadCond: 'Wet', weather: 'Rain', damages: '10 pieces of guiderail' };
+  direction: 'EB', vehicles: 1, injuries: 'Unknown', fatality: 'No', roadCond: 'Wet', weather: 'Rain', damages: '10 pieces of guiderail' };
 
 (async () => {
   reset();
@@ -167,6 +169,47 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
      [200, true, '2026-10-15', 'Replaced 10 pieces']);
   ok('…and ticks "Photos of the completed repairs"', Object.values(DB[T.folder]).some(x => x.fields.fldLCZxKhdozk8fhk === 'Photos of the completed repairs' && x.fields.fldUjL1uELhKd5O3P));
 
+  /* 5b — two vehicles (Troy, 2026-10-07: "when there is more than one vehicle involved,
+     there will need to be two sets of drivers and vehicle info gathered") */
+  DB[T.ar][Object.keys(DB[T.ar])[0]].fields.fldRa0KV1HJzLMOjH = 'Draft';
+  r = await call('POST', { mva: mid, report: { vehicles: 2, extraVehicles: [{ n: 2 }] } });
+  eq('the count goes to 2: no empty vehicle 2 is made', [r.status, Object.keys(DB[T.veh]).length, r.json.report.extraVehicles], [200, 0, []]);
+  r = await call('POST', { mva: mid, report: {}, submit: true });
+  eq('submit asks for vehicle 2\'s photos, named by vehicle', [r.status, r.json.missing],
+     [400, ["Vehicle 2: Photo of the driver's licence", 'Vehicle 2: Photo of the licence plate', 'Vehicle 2: Photo of the insurance card']]);
+  r = await call('POST', { mva: mid, report: { extraVehicles: [{ n: 2, driver: 'Ann Leger', plate: 'NB ABC 123', hasTrailer: true, bogus: 'x', id: 'recX', photos: {} }, { n: 11, driver: 'Too many' }, { n: 1, driver: 'Not here' }] } });
+  const v2 = Object.values(DB[T.veh]);
+  eq('vehicle 2 is saved to its own row, linked and numbered', v2.map(v => [v.fields.fldwfUp29kQs8NQI7, v.fields.fld7fXDhTxP7HC637[0] === Object.keys(DB[T.ar])[0], v.fields.fldCOloDspNrByuT7, v.fields.fldrsCPZRY84m6vr7, v.fields.fldSrbIaByRSsdc6x]),
+     [['2026-10-06-303.000-EB-AR-V2', true, 2, 'Ann Leger', true]]);
+  eq('…vehicle 1 on the report is left alone; 11 is ignored', [Object.values(DB[T.ar])[0].fields.fldTskwroWMBDCjZq || '', Object.keys(DB[T.veh]).length], ['', 1]);
+  eq('…and it comes back with the report', [r.json.report.extraVehicles.length, r.json.report.extraVehicles[0].n, r.json.report.extraVehicles[0].driver, r.json.report.extraVehicles[0].plate], [1, 2, 'Ann Leger', 'NB ABC 123']);
+  const nw = writes.length;
+  await call('POST', { mva: mid, report: { extraVehicles: [{ n: 2, driver: 'Ann Leger' }] } });
+  ok('an unchanged vehicle is not written again', !writes.slice(nw).some(w => w.table === T.veh), JSON.stringify(writes.slice(nw)));
+  const vphoto = (kind, name, n) => call('POST', { mva: mid, action: 'photo', kind, vehicle: n, filename: name, contentType: 'image/jpeg', data: 'eA==' });
+  r = await vphoto('licence', 'dl-v2.jpg', 2);
+  eq('a vehicle 2 photo goes to its row, not the report', [uploads.slice(-1)[0].recordId === v2[0].id, uploads.slice(-1)[0].fieldId, r.json.report.extraVehicles[0].photos.licence.map(p => p.filename), r.json.report.photos.licence.length],
+     [true, 'fld8jYrCXrGqsSm9N', ['dl-v2.jpg'], 1]);
+  r = await vphoto('accident', 'x.jpg', 2);
+  eq('damage photos are not per vehicle: 400', r.status, 400);
+  r = await vphoto('licence', 'x.jpg', 12);
+  eq('an unknown vehicle: 400', r.status, 400);
+  await vphoto('plate', 'p-v2.jpg', 2); await vphoto('insurance', 'i-v2.jpg', 2);
+  r = await call('POST', { mva: mid, report: {}, submit: true });
+  eq('vehicle 2 has a trailer: its trailer plate is needed', r.json.missing, ["Vehicle 2: Photo of the trailer's licence plate"]);
+  r = await vphoto('trailer', 't-v2.jpg', 2);
+  eq('…which goes to its trailer field', uploads.slice(-1)[0].fieldId, 'fldQWeXpFVddoF5FS');
+  r = await call('POST', { mva: mid, report: {}, submit: true });
+  eq('both vehicles complete: it submits', [r.status, r.json.report.status], [200, 'Submitted']);
+  const pid = r.json.report.extraVehicles[0].photos.plate[0].id;
+  r = await call('POST', { mva: mid, action: 'photoRemove', kind: 'plate', vehicle: 2, fileId: pid });
+  eq('a vehicle 2 photo can be removed', r.json.report.extraVehicles[0].photos.plate, []);
+  r = await call('POST', { mva: mid, report: { vehicles: 3 }, submit: true });
+  ok('three vehicles: vehicle 3 is asked for too', r.json.missing.includes("Vehicle 3: Photo of the driver's licence") && r.json.missing.includes('Vehicle 2: Photo of the licence plate'), JSON.stringify(r.json.missing));
+  r = await call('POST', { mva: mid, report: { vehicles: 3, hitRun: true }, submit: true });
+  eq('a hit & run still needs only the damage photos', r.status, 200);
+  await call('POST', { mva: mid, report: { vehicles: 1, hitRun: false } });
+
   /* 6 — who may */
   session = S('Employee', 'Patroller', 'James Rodey');
   r = await call('GET', null, { mva: mid });
@@ -189,6 +232,10 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   r = await call('POST', { mva: mid, report: { truck: 'Y2' } });
   eq('sent back: open to him again', [r.status, r.json.report.truck], [200, 'Y2']);
   DB[T.mva][mid].fields.fldelaGXvgjkSNxpH = 'With claims';
+  session = S('Admin', 'Admin', 'Troy Johnston');
+  session = S('Employee', 'Supervisor', 'Derek Melanson');
+  r = await call('POST', { mva: mid, action: 'photo', kind: 'licence', vehicle: 2, filename: 'z.jpg', data: 'eA==' });
+  eq('the verifier cannot add a vehicle 2 photo', r.status, 409);
   session = S('Admin', 'Admin', 'Troy Johnston');
   r = await call('POST', { mva: mid, report: { truck: 'Y' } });
   eq('…a supervisor can still correct it', [r.status, r.json.report.truck], [200, 'Y']);
