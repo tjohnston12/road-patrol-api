@@ -21,6 +21,13 @@
  *   POST {mva, action:'photoRemove', kind, fileId}
  *   POST {mva, repairs:{date, notes}, repairsDone:true}   proof of repairs; ticks
  *                                           "Photos of the completed repairs"
+ * More than one vehicle (Troy, 2026-10-07: "when there is more than one vehicle involved,
+ * there will need to be two sets of drivers and vehicle info gathered"): vehicle 1 stays on
+ * the Accident Reports row; vehicles 2, 3… are rows in Accident Vehicles (Vehicle Ref =
+ * <Report No.>-V<n>), one per vehicle, with the same driver / vehicle / insurance fields and
+ * photos. "# of vehicles involved" decides how many sets submit asks for.
+ *   report.extraVehicles: [{n, driver, …}]   saved with the report (n = 2…10)
+ *   photo / photoRemove take vehicle: n      (absent or 1 = the report row)
  * Ownership: the MVA's patroller / submitter, or a supervisor (mva.js ownsMva).
  * The file's reviewers (verifier, approver, claims manager) can read it. Anyone else
  * is 404. Only the patroller (while Open / Sent back) or an admin may change it (409).
@@ -55,6 +62,19 @@ const A = {
   injuries3: 'fldWdeQqgXx7ycBmo', fatality3: 'fld0XMlrjJ5atFqoH',
   hasTrailer: 'fldnwBKWP05K43yPx', trailerPlatePhoto: 'fldWb06wd1RE8uuiq', trailerPlate: 'fldj44y9MXHrp42Nz',
 };
+// Vehicles 2…10 (Accident Vehicles). Vehicle 1 is the report row (A above).
+const T_VEH = process.env.MVA_VEH_TABLE || 'tblpMfPIXMJhFmuuw';
+const V = {
+  ref: 'fldwfUp29kQs8NQI7', report: 'fld7fXDhTxP7HC637', n: 'fldCOloDspNrByuT7',
+  driver: 'fldrsCPZRY84m6vr7', driverIsOwner: 'fldE4n4paHReCNHk0', owner: 'fldtGGTTroYRmTchK', trucking: 'fld4iBnimIgzmM277',
+  licence: 'fldDsuynBPZDXOw9l', vehicle: 'fld1sdbF1wNqCtSjn', plate: 'fldzShG6OD5pz0lZv', hasTrailer: 'fldSrbIaByRSsdc6x',
+  trailerPlate: 'fldpyjn6ruBStlGaF', insurer: 'fldGXaDmNHwrRhosf', policy: 'fldVRqmwsvcPfZmO7',
+  licencePhoto: 'fld8jYrCXrGqsSm9N', platePhoto: 'fldl5T1V1XHzV5USf', trailerPlatePhoto: 'fldQWeXpFVddoF5FS', insurancePhoto: 'fld3RVNUJQDkjFxpi',
+};
+const V_TEXT = ['driver', 'owner', 'trucking', 'licence', 'vehicle', 'plate', 'trailerPlate', 'insurer', 'policy'];
+const V_BOOL = ['driverIsOwner', 'hasTrailer'];
+const V_PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', trailer: 'trailerPlatePhoto', insurance: 'insurancePhoto' };
+const MAX_VEHICLES = 10;
 const CHOICES = {
   divisions: ['Eastern', 'Western'], routes: ['Route 2', 'Route 7', 'Other'], directions: ['EB', 'WB', 'NB', 'SB'],
   ramps: ['ON Ramp', 'OFF Ramp'], ynu: ['Yes', 'No', 'Unknown'],
@@ -106,6 +126,54 @@ function shapeAR(rec) {
   return out;
 }
 const reportNo = mva => `${mva.mvaNo}-AR`;
+const vehRef = (rec, n) => `${(rec.fields || {})[A.reportNo]}-V${n}`;
+const vehN = v => { const n = parseInt(v, 10); return n >= 2 && n <= MAX_VEHICLES ? n : 0; };
+function shapeVeh(rec) {
+  const f = rec.fields || {}, out = { id: rec.id, n: f[V.n] || 0 };
+  for (const k of V_TEXT) out[k] = f[V[k]] || '';
+  for (const k of V_BOOL) out[k] = !!f[V[k]];
+  out.photos = {};
+  for (const [kind, key] of Object.entries(V_PHOTO)) out.photos[kind] = arr(f[V[key]]).map(a => ({ id: a.id, url: a.url, filename: a.filename,
+    thumb: a.thumbnails?.large?.url || a.thumbnails?.small?.url || '' }));
+  return out;
+}
+async function vehicleRows(rec) {
+  if (!rec) return [];
+  const qs = new URLSearchParams(), pre = `${(rec.fields || {})[A.reportNo]}-V`;
+  qs.set('returnFieldsByFieldId', 'true');
+  qs.set('filterByFormula', `FIND('${pre.replace(/'/g, "\\'")}',{Vehicle Ref})=1`);
+  const j = await airtable(`${M.BASE}/${T_VEH}?${qs}`);
+  return (j.records || []).filter(r => vehN((r.fields || {})[V.n])).sort((a, b) => a.fields[V.n] - b.fields[V.n]);
+}
+async function ensureVehicle(rec, rows, n) {
+  const hit = rows.find(r => r.fields[V.n] === n);
+  if (hit) return hit;
+  const made = await airtable(`${M.BASE}/${T_VEH}`, { method: 'POST', body: JSON.stringify({ returnFieldsByFieldId: true, fields: {
+    [V.ref]: vehRef(rec, n), [V.report]: [rec.id], [V.n]: n } }) });
+  rows.push(made);
+  return made;
+}
+// Save the extra vehicles sent with the report. A vehicle with nothing filled in is not
+// created (autosave sends the empty set as soon as the count goes up); an unchanged one is
+// not written.
+async function saveVehicles(rec, rows, list) {
+  for (const v of arr(list)) {
+    const n = vehN(v && v.n);
+    if (!n) continue;
+    const f = {};
+    for (const k of V_TEXT) if (v[k] !== undefined) f[V[k]] = String(v[k] == null ? '' : v[k]).slice(0, 5000);
+    for (const k of V_BOOL) if (v[k] !== undefined) f[V[k]] = !!v[k];
+    const hit = rows.find(r => r.fields[V.n] === n);
+    if (!hit && !Object.values(f).some(x => x)) continue;
+    const row = hit || await ensureVehicle(rec, rows, n);
+    const cur = row.fields || {};
+    const diff = Object.fromEntries(Object.entries(f).filter(([k, x]) => (cur[k] || (typeof x === 'boolean' ? false : '')) !== x));
+    if (!Object.keys(diff).length) continue;
+    const upd = await airtable(`${M.BASE}/${T_VEH}/${row.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields: diff }) });
+    rows[rows.indexOf(row)] = upd;
+  }
+}
+function withVehicles(rep, rows) { if (rep) rep.extraVehicles = rows.map(shapeVeh); return rep; }
 async function findReport(mva) {
   const qs = new URLSearchParams();
   qs.set('returnFieldsByFieldId', 'true'); qs.set('maxRecords', '1');
@@ -134,14 +202,20 @@ function tick(caller, now) {
 // necessary), the drivers license, the insurance card. This in in addition to photos of
 // the damages.") A photo is the record — the typed numbers are optional. A hit & run has
 // no driver or vehicle to photograph, so only the damage photos are needed then.
+// One set per vehicle involved: "# of vehicles involved" (at least 1, at most 10).
+function vehicleCount(r) { const n = parseInt(r.vehicles, 10); return Math.min(MAX_VEHICLES, Math.max(1, isNaN(n) ? 1 : n)); }
 function photosMissing(r, mva) {
-  const p = r.photos || {}, n = k => (p[k] || []).length, out = [];
-  if (!n('accident') && !((mva && mva.photos) || []).length) out.push('Photos of the accident and damages');
-  if (!r.hitRun) {
-    if (!n('licence')) out.push("Photo of the driver's licence");
-    if (!n('plate')) out.push('Photo of the licence plate');
-    if (r.hasTrailer && !n('trailer')) out.push("Photo of the trailer's licence plate");
-    if (!n('insurance')) out.push('Photo of the insurance card');
+  const p = r.photos || {}, out = [];
+  if (!(p.accident || []).length && !((mva && mva.photos) || []).length) out.push('Photos of the accident and damages');
+  if (r.hitRun) return out;
+  const count = vehicleCount(r), extra = arr(r.extraVehicles);
+  for (let i = 1; i <= count; i++) {
+    const v = i === 1 ? r : (extra.find(x => x.n === i) || { photos: {} });
+    const vp = v.photos || {}, n = k => (vp[k] || []).length, pre = count > 1 ? `Vehicle ${i}: ` : '';
+    if (!n('licence')) out.push(pre + "Photo of the driver's licence");
+    if (!n('plate')) out.push(pre + 'Photo of the licence plate');
+    if (v.hasTrailer && !n('trailer')) out.push(pre + "Photo of the trailer's licence plate");
+    if (!n('insurance')) out.push(pre + 'Photo of the insurance card');
   }
   return out;
 }
@@ -157,7 +231,8 @@ module.exports = async function handler(req, res) {
       const mva = await M.loadOwned(req.query?.mva, caller);
       if (!mva) return res.status(404).json(M.NOT_FOUND);
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ mva, report: shapeAR(await findReport(mva)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva) });
+      const found = await findReport(mva);
+      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva) });
     }
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const body = L.parseBody(req);
@@ -171,9 +246,28 @@ module.exports = async function handler(req, res) {
                                                                         : 'Only the patroller fills in the accident report — send the file back with a note if something is missing.' });
     const now = new Date().toISOString();
     let rec = await ensureReport(mva, caller);
+    const rows = await vehicleRows(rec);
     let note = '';
+    // Which vehicle a photo is for: absent / 1 = the report row, 2…10 = Accident Vehicles.
+    const vn = body.vehicle == null || +body.vehicle === 1 ? 1 : vehN(body.vehicle);
+    if ((body.action === 'photo' || body.action === 'photoRemove') && !vn) return res.status(400).json({ error: 'Unknown vehicle' });
 
-    if (body.action === 'photo') {
+    if (body.action === 'photo' && vn > 1) {
+      const key = V_PHOTO[body.kind];
+      if (!key) return res.status(400).json({ error: 'Unknown photo' });
+      if (!body.data) return res.status(400).json({ error: 'data (base64) is required' });
+      const row = await ensureVehicle(rec, rows, vn);
+      await L.uploadAttachment({ base: M.BASE, recordId: row.id, fieldId: V[key], filename: body.filename, contentType: body.contentType, data: body.data });
+      rows[rows.indexOf(row)] = await airtable(`${M.BASE}/${T_VEH}/${row.id}?returnFieldsByFieldId=true`);
+    } else if (body.action === 'photoRemove' && vn > 1) {
+      const key = V_PHOTO[body.kind];
+      if (!key) return res.status(400).json({ error: 'Unknown photo' });
+      const row = rows.find(r => r.fields[V.n] === vn);
+      if (row) {
+        const keep = arr(row.fields[V[key]]).filter(a => a.id !== body.fileId).map(a => ({ id: a.id }));
+        rows[rows.indexOf(row)] = await airtable(`${M.BASE}/${T_VEH}/${row.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields: { [V[key]]: keep } }) });
+      }
+    } else if (body.action === 'photo') {
       const key = PHOTO[body.kind];
       if (!key) return res.status(400).json({ error: 'Unknown photo' });
       if (!body.data) return res.status(400).json({ error: 'data (base64) is required' });
@@ -191,7 +285,8 @@ module.exports = async function handler(req, res) {
         if (body.repairs.notes !== undefined) f[A.repairNotes] = String(body.repairs.notes || '').slice(0, 5000);
       }
       if (Object.keys(f).length) rec = await patch(rec.id, f);
-      const cur = shapeAR(rec);
+      if (body.report && body.report.extraVehicles !== undefined) await saveVehicles(rec, rows, body.report.extraVehicles);
+      const cur = withVehicles(shapeAR(rec), rows);
       if (body.submit) {
         const missing = missingFor(cur, mva);
         if (missing.length) return res.status(400).json({ error: 'Still needed: ' + missing.join(', '), missing, report: cur });
@@ -207,10 +302,10 @@ module.exports = async function handler(req, res) {
         note = 'repairs';
       }
     }
-    return res.status(200).json({ mva, report: shapeAR(rec), saved: note || 'saved' });
+    return res.status(200).json({ mva, report: withVehicles(shapeAR(rec), rows), saved: note || 'saved' });
   } catch (e) {
     console.error('accident error:', e);
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { A, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing };
+module.exports.lib = { A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount };
