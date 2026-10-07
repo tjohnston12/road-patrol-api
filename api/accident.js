@@ -28,6 +28,13 @@
  * photos. "# of vehicles involved" decides how many sets submit asks for.
  *   report.extraVehicles: [{n, driver, …}]   saved with the report (n = 2…10)
  *   photo / photoRemove take vehicle: n      (absent or 1 = the report row)
+ * Official weather (Troy, 2026-10-07: "Can we link a weather app to record official conditions
+ * at the time?"): POST {mva, action:'weather'} looks up the Environment and Climate Change Canada
+ * station observation nearest the scene (the MVA's GPS, else the division's airport) closest to
+ * the time of the accident, from api.weather.gc.ca (swob-realtime — NAV CANADA airports and MSC
+ * stations along the corridor), and saves a plain summary + the station, time and a link to the
+ * original record. That service keeps about 30 days, so it is captured when the report is
+ * worked on, and again automatically on submit if it was never fetched.
  * Ownership: the MVA's patroller / submitter, or a supervisor (mva.js ownsMva).
  * The file's reviewers (verifier, approver, claims manager) can read it. Anyone else
  * is 404. Only the patroller (while Open / Sent back) or an admin may change it (409).
@@ -60,6 +67,7 @@ const A = {
   spill: 'fldwz2MySSdbCLyb5', fire: 'flda1eMrxZNUVoeWN', doeContacted: 'fldgjigRvD4JRm0c0',
   doeDetails: 'fldzlgK3DQtsVmWlu', fireDetails: 'fldXVTOjjwkx8ASa1',
   injuries3: 'fldWdeQqgXx7ycBmo', fatality3: 'fld0XMlrjJ5atFqoH',
+  officialWeather: 'fldMXyqLpqpBMpAjR', officialWeatherStation: 'fldOwrXAOQ3iqRVhh', officialWeatherAt: 'fldo6kZHO0YUtsyFV', officialWeatherUrl: 'fldObWVGNF4TdevJj',
   hasTrailer: 'fldnwBKWP05K43yPx', trailerPlatePhoto: 'fldWb06wd1RE8uuiq', trailerPlate: 'fldj44y9MXHrp42Nz',
 };
 // Vehicles 2…10 (Accident Vehicles). Vehicle 1 is the report row (A above).
@@ -119,6 +127,8 @@ function shapeAR(rec) {
     km: f[A.km] != null ? f[A.km] : '', vehicles: f[A.vehicles] != null ? f[A.vehicles] : '',
     status: sel(f[A.status]) || 'Draft', submittedBy: f[A.submittedBy] || '', submittedAt: f[A.submittedAt] || '',
     startedBy: f[A.startedBy] || '', startedAt: f[A.startedAt] || '',
+    officialWeather: f[A.officialWeather] || '', officialWeatherStation: f[A.officialWeatherStation] || '',
+    officialWeatherAt: f[A.officialWeatherAt] || '', officialWeatherUrl: f[A.officialWeatherUrl] || '',
     repairsDone: !!f[A.repairsDone], repairDate: f[A.repairDate] || '', repairNotes: f[A.repairNotes] || '' });
   out.photos = {};
   for (const [kind, key] of Object.entries(PHOTO)) out.photos[kind] = arr(f[A[key]]).map(a => ({ id: a.id, url: a.url, filename: a.filename,
@@ -202,6 +212,79 @@ function tick(caller, now) {
 // necessary), the drivers license, the insurance card. This in in addition to photos of
 // the damages.") A photo is the record — the typed numbers are optional. A hit & run has
 // no driver or vehicle to photograph, so only the damage photos are needed then.
+/* ---- Official weather: Environment and Climate Change Canada ---------------------------- */
+const WX_API = process.env.WX_API || 'https://api.weather.gc.ca/collections/swob-realtime/items';
+const WX_BBOX = '-67.3,45.3,-64.0,46.6';           // the Fredericton–Moncton corridor and its stations
+const WX_KEEP_DAYS = 29;                            // swob-realtime keeps about 30 days
+// No GPS on the MVA: the division's airport stands in for the scene.
+const DIV_POINT = { Western: [45.869, -66.537], Eastern: [46.112, -64.679] };
+function parseGps(g) {
+  const m = String(g || '').match(/(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)/);
+  if (!m) return null;
+  const lat = +m[1], lon = +m[2];
+  return lat > 40 && lat < 50 && lon > -70 && lon < -60 ? [lat, lon] : null;
+}
+function km([a, b], [c, d]) {
+  const r = x => x * Math.PI / 180, dLat = r(c - a), dLon = r(d - b);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(h));
+}
+const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+const first = (p, keys) => { for (const k of keys) if (p[k] != null && p[k] !== '' && p[k] !== 'MSNG') return p[k]; return null; };
+const wxLocal = iso => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' }).format(new Date(iso)).replace(',', '');
+function wxSummary(p, distKm, mins, scene) {
+  const temp = first(p, ['air_temp']), dew = first(p, ['dwpt_temp']), hum = first(p, ['rel_hum']);
+  const spd = first(p, ['avg_wnd_spd_10m_pst2mts', 'avg_wnd_spd_10m_pst10mts', 'avg_wnd_spd_10m_pst1hr']);
+  const dir = first(p, ['avg_wnd_dir_10m_pst2mts', 'avg_wnd_dir_10m_pst10mts', 'avg_wnd_dir_10m_pst1hr']);
+  const gust = first(p, ['max_wnd_spd_10m_pst1hr']);
+  const vis = first(p, ['vis', 'avg_vis_pst10mts', 'avg_vis_pst1hr']);
+  const pcpn = first(p, ['pcpn_amt_pst1hr', 'rnfl_amt_pst1hr']);
+  const snow = first(p, ['snw_dpth', 'avg_snw_dpth_pst5mts']);
+  const when = mins === 0 ? 'at the time of the accident' : `${Math.abs(mins)} min ${mins < 0 ? 'before' : 'after'} the accident`;
+  const lines = [
+    `Environment and Climate Change Canada observation — ${p['stn_nam-value'] || 'station'}${p['data_pvdr-value'] ? ' (' + p['data_pvdr-value'] + ')' : ''}`,
+    `Observed ${wxLocal(p.obs_date_tm || p['date_tm-value'])} (${when}), ${Math.round(distKm)} km from ${scene}`,
+  ];
+  if (temp != null) lines.push(`Temperature ${temp} °C` + (dew != null ? `, dew point ${dew} °C` : '') + (hum != null ? `, humidity ${hum}%` : ''));
+  if (spd != null) lines.push(`Wind ${dir != null && +spd > 0 ? 'from ' + COMPASS[Math.round(+dir / 22.5) % 16] + ' ' : ''}${Math.round(+spd)} km/h` + (gust != null && +gust > +spd ? `, gusting ${Math.round(+gust)} km/h` : ''));
+  if (vis != null) lines.push(`Visibility ${Math.round(+vis * 10) / 10} km`);
+  if (pcpn != null) lines.push(`Precipitation in the past hour ${pcpn} mm`);
+  if (snow != null && +snow > 0) lines.push(`Snow on the ground ${snow} cm`);
+  if (p['data_attrib_not-value']) lines.push(p['data_attrib_not-value']);
+  return lines.join('\n');
+}
+// → { text, station, at, url } or throws a 4xx with a plain reason.
+async function officialWeather(whenIso, mva, division) {
+  const fail = (status, msg) => Object.assign(new Error(msg), { status });
+  const t = Date.parse(whenIso || '');
+  if (isNaN(t)) throw fail(400, 'Enter the time of the accident first.');
+  if (t > Date.now() + 10 * 60000) throw fail(400, 'The time of the accident is in the future.');
+  if (Date.now() - t > WX_KEEP_DAYS * 864e5) throw fail(404, 'Environment Canada keeps the live station reports for about 30 days and this accident is older — use the historical data at climate.weather.gc.ca.');
+  const gps = parseGps(mva && mva.gps), here = gps || DIV_POINT[division] || DIV_POINT.Western;
+  const scene = gps ? 'the scene (GPS)' : `the scene (no GPS — the ${division || 'Western'} division's airport was used)`;
+  const qs = new URLSearchParams({ f: 'json', limit: '1000', bbox: WX_BBOX,
+    datetime: `${new Date(t - 75 * 60000).toISOString().replace(/\.\d+Z$/, 'Z')}/${new Date(t + 20 * 60000).toISOString().replace(/\.\d+Z$/, 'Z')}` });
+  let j;
+  try {
+    const r = await fetch(`${WX_API}?${qs}`, { headers: { Accept: 'application/geo+json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    j = await r.json();
+  } catch (e) { throw fail(502, 'Environment Canada did not answer (' + e.message + ') — try again in a minute.'); }
+  const obs = (j.features || []).filter(f => f && f.properties && !/minute/.test(f.id || '') && first(f.properties, ['air_temp']) != null
+    && Array.isArray(f.geometry && f.geometry.coordinates))
+    .map(f => { const p = f.properties, at = Date.parse(p.obs_date_tm || p['date_tm-value']);
+      return { f, p, at, dist: km(here, [f.geometry.coordinates[1], f.geometry.coordinates[0]]), dt: Math.abs(at - t), vis: first(p, ['vis', 'avg_vis_pst10mts']) != null }; })
+    .filter(o => !isNaN(o.at));
+  if (!obs.length) throw fail(404, 'No Environment Canada station report was found within an hour of the time of the accident.');
+  const nearest = Math.min(...obs.map(o => o.dist));
+  // The nearest station (within 1 km counts as the same site); of its reports, the closest in time, a full one first.
+  const pick = obs.filter(o => o.dist - nearest < 1).sort((a, b) => a.dt - b.dt || (b.vis - a.vis))[0];
+  const mins = Math.round((pick.at - t) / 60000);
+  return { text: wxSummary(pick.p, pick.dist, mins, scene), station: pick.p['stn_nam-value'] || '', at: new Date(pick.at).toISOString(), url: pick.p.url || '' };
+}
+const wxFields = w => ({ [A.officialWeather]: w.text, [A.officialWeatherStation]: w.station, [A.officialWeatherAt]: w.at, [A.officialWeatherUrl]: w.url || null });
+
 // One set per vehicle involved: "# of vehicles involved" (at least 1, at most 10).
 function vehicleCount(r) { const n = parseInt(r.vehicles, 10); return Math.min(MAX_VEHICLES, Math.max(1, isNaN(n) ? 1 : n)); }
 function photosMissing(r, mva) {
@@ -267,6 +350,11 @@ module.exports = async function handler(req, res) {
         const keep = arr(row.fields[V[key]]).filter(a => a.id !== body.fileId).map(a => ({ id: a.id }));
         rows[rows.indexOf(row)] = await airtable(`${M.BASE}/${T_VEH}/${row.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields: { [V[key]]: keep } }) });
       }
+    } else if (body.action === 'weather') {
+      const cur = shapeAR(rec);
+      const w = await officialWeather(cur.timeOfAccident || mva.occurredAt, mva, cur.division || mva.division);
+      rec = await patch(rec.id, wxFields(w));
+      note = 'weather';
     } else if (body.action === 'photo') {
       const key = PHOTO[body.kind];
       if (!key) return res.status(400).json({ error: 'Unknown photo' });
@@ -291,6 +379,11 @@ module.exports = async function handler(req, res) {
         const missing = missingFor(cur, mva);
         if (missing.length) return res.status(400).json({ error: 'Still needed: ' + missing.join(', '), missing, report: cur });
         if (cur.status === 'Draft') rec = await patch(rec.id, { [A.status]: 'Submitted', [A.submittedBy]: caller.name || '', [A.submittedAt]: now });
+        // The live station reports only last about 30 days: record them now if nobody did.
+        if (!cur.officialWeather) {
+          try { rec = await patch(rec.id, wxFields(await officialWeather(cur.timeOfAccident, mva, cur.division))); }
+          catch (e) { console.warn('accident: official weather on submit:', e.message); }
+        }
         await M.upsertItem(mva, 'Accident Report', tick(caller, now));
         note = 'submitted';
       }
@@ -308,4 +401,4 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount };
+module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount };
