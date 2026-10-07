@@ -434,7 +434,7 @@ const FV = { unit: 'fldVL7P5cZaQO0lLM', status: 'fldY6lnC7p63eInFV', series: 'fl
 // Road-going series only (pickups, one-tons, single axles, tandems, tractors) — not attachments.
 const ROAD_SERIES = ['10', '12', '20', '21', '60'];
 const FLEET_TTL_MS = 10 * 60 * 1000;
-let FLEET_CACHE = null;
+let FLEET_CACHE = null, FLEET_ERROR = '';
 const normUnit = s => String(s || '').toUpperCase().replace(/[\s\-_.\/]/g, '');
 async function getFleet() {
   if (FLEET_CACHE && Date.now() - FLEET_CACHE.at < FLEET_TTL_MS) return FLEET_CACHE.list;
@@ -460,8 +460,14 @@ async function getFleet() {
     } while (offset);
     out.sort((a, b) => a.unit.localeCompare(b.unit, 'en', { numeric: true }));
     FLEET_CACHE = { at: Date.now(), list: out };
+    FLEET_ERROR = out.length ? '' : 'Fleet DB answered with no active road units';
     return out;
-  } catch (_) { return FLEET_CACHE ? FLEET_CACHE.list : []; }
+  } catch (e) {
+    // Only the kind of failure, never data: it is what tells a token without Fleet DB
+    // (403) apart from anything else when the list comes back empty.
+    FLEET_ERROR = `Fleet DB could not be read${e && e.status ? ' (' + e.status + ')' : ''}${e && e.message ? ': ' + String(e.message).slice(0, 80) : ''}`;
+    return FLEET_CACHE ? FLEET_CACHE.list : [];
+  }
 }
 // Stamp (or clear) the fleet record id whenever the vehicle number is being written.
 async function stampFleet(fields, vehicle) {
@@ -489,6 +495,7 @@ async function getChoices() {
     patrollers: employees.filter(e => e.active).map(slim),
     vehicles,
     fleet,
+    ...(fleet.length ? {} : { fleetNote: FLEET_ERROR }),
   };
 }
 
