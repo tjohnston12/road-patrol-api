@@ -2,7 +2,9 @@
 //
 // No Travel Advisories for the Road Patrol app (www.mrdc-htra.com/patrol/advisories.html).
 // Replaces the two DeviceMagic forms "Winter - No Travel Advisory - ISSUED" and
-// "... - LIFTED" (exports read 2026-10-07). Troy chose it on 2026-10-07: the Winter
+// "... - LIFTED" (exports read 2026-10-07). It is the highest warning MRDC issues: the
+// patrol issues it when travel is unsafe; it goes to NB511 and on to radio and the media.
+// MRDC never closes the highway — only the RCMP can. Troy chose it on 2026-10-07: the Winter
 // Operations Plan §5.2.3 names the DeviceMagic form as the way an advisory is
 // recorded, so it has to exist here before the season.
 //
@@ -41,7 +43,12 @@ const A = {
   liftEmailedTo: 'fldnhFzyHh6a8Souk', liftEmailedAt: 'fldwKMupx47JNfZp2',
 };
 const ROUTES = ['Route 1', 'Route 2', 'Route 7', 'Route 8'];          // the DeviceMagic list
-const TYPES = ['No Travel Advisory', 'Highway Closed / Emergency Vehicles Only'];   // Winter Plan §5.2.3, the two protocols
+/* Troy, 2026-10-07: "a travel advisory is issued by a patrol when it is deemed unsafe to travel
+   on our highway, this is sent to nb511 and subsequently gets repeated on radio stations etc to
+   make the public aware. It is the highest level of warning we issue since we do not close our
+   highways to travel, only the RCMP can do that." So MRDC issues ONE kind — a closure is the
+   RCMP's, never ours. (The Airtable Type field keeps an unused closure choice; harmless.) */
+const TYPES = ['No Travel Advisory'];
 const LIST = 'Travel Advisories';
 // Winter Plan §5.2.3: "email to the management group (area managers, general manager,
 // safety manager, quality manager)". Operations Manager sits with the area managers.
@@ -71,7 +78,7 @@ function when(v, now, label) {
 function cleanIssue(b, caller, now = new Date()) {
   b = b || {};
   const type = String(b.type || TYPES[0]);
-  if (!TYPES.includes(type)) return { error: 'Choose the kind of advisory.' };
+  if (!TYPES.includes(type)) return { error: 'MRDC issues a No Travel Advisory only — closing the highway is the RCMP\'s call, not ours.' };
   const routes = ROUTES.filter(r => (Array.isArray(b.routes) ? b.routes : []).map(String).includes(r));
   if (!routes.length) return { error: 'Pick the route(s).' };
   if ((Array.isArray(b.routes) ? b.routes : []).some(r => !ROUTES.includes(String(r)))) return { error: 'Unknown route.' };
@@ -136,6 +143,7 @@ function message(adv, kind, real, preview) {
     ${lifted ? `<p style="margin:0 0 4px"><b>Lifted ${esc(dt(adv.liftedAt))} by ${esc(adv.liftedBy)}</b></p>` : ''}
     <p style="margin:8px 0 4px"><b>Conditions / reason:</b> ${esc(adv.reason)}</p>
     ${lifted && adv.liftNotes ? `<p style="margin:8px 0 4px"><b>Lift notes:</b> ${esc(adv.liftNotes)}</p>` : ''}
+    <p style="margin:10px 0 4px;color:#555">The patroller contacts the Ops Centre, who ${lifted ? 'have it taken down from' : 'put it out on'} NB511.</p>
     <p style="margin-top:14px"><a href="https://www.mrdc-htra.com/patrol/advisories.html">Open travel advisories</a></p>
     <p style="font-size:12px;color:#777">From the MRDC Road Patrol app · Winter Operations Plan §5.2.3.</p></div>`;
   return { subject, html };
