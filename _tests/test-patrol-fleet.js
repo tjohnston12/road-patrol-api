@@ -3,8 +3,8 @@
 // Zero dependencies; no browser, no network, no credentials.
 //
 // The patrol vehicle from the fleet list (Troy, 2026-10-07). api/patrol.js:
-//  1. getFleet() reads Fleet DB Inventory: ACTIVE units in the road series only (10, 12, 20,
-//     21, 60), every page, fields by id, sorted by unit number; cached 10 minutes.
+//  1. getFleet() reads Fleet DB Inventory: ACTIVE units in the 10 series (pickups) only —
+//     "patrollers only drive pickups 10 series" (Troy) — every page, fields by id, sorted by unit number; cached 10 minutes.
 //  2. ?meta=1 carries it as choices.fleet, and still carries the learned `vehicles` list
 //     (a spare or rental is typed).
 //  3. A Fleet DB that cannot be read gives an empty list; the meta call still answers.
@@ -77,8 +77,9 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     /* 1 */
     T.resetFleetCache(); fleetCalls = [];
     const list = await T.getFleet();
-    eq('active road units only, both pages, sorted by number', list.map(u => u.unit), ['1910-01', '1910-02', '2121-46', '2210-44']);
-    eq('…shaped for the form', list[3], { unit: '2210-44', recId: 'recFLEETUNIT00010', series: '10', designation: 'West Patroller', depot: 'Oromocto', make: '', model: 'Silverado' });
+    eq('active 10-series pickups only (no tandem, no attachment, no retired), both pages, sorted', list.map(u => u.unit), ['1910-01', '1910-02', '2210-44']);
+    eq('…the series list is pickups only', T.PATROL_SERIES, ['10']);
+    eq('…shaped for the form', list[2], { unit: '2210-44', recId: 'recFLEETUNIT00010', series: '10', designation: 'West Patroller', depot: 'Oromocto', make: '', model: 'Silverado' });
     ok('…asked for Active, by field id, and followed the offset', fleetCalls.length === 2 && fleetCalls[0].searchParams.get('filterByFormula') === "{Active / Retired}='Active'"
        && fleetCalls[0].searchParams.get('returnFieldsByFieldId') === 'true' && fleetCalls[0].searchParams.getAll('fields[]').includes(FV.designation)
        && fleetCalls[1].searchParams.get('offset') === 'pg2', fleetCalls.map(String).join(' '));
@@ -87,7 +88,7 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     eq('cached: a second read within 10 minutes asks nobody', fleetCalls.length, 2);
     /* 2 */
     const r = await call('GET', null, { meta: '1' });
-    eq('meta carries the fleet list', [r.code, (r.body.choices.fleet || []).length], [200, 4]);
+    eq('meta carries the fleet list', [r.code, (r.body.choices.fleet || []).length], [200, 3]);
     eq('…and still the learned list (spares, rentals)', r.body.choices.vehicles, ['R-4471']);
     /* 3 */
     T.resetFleetCache(); fleetDown = true;
@@ -105,7 +106,9 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     await call('POST', { draft: true, reportId: 'RP-3', patroller: 'Pat Roller', vehicle: 'R-4471' });
     eq('a rental / unit not on the fleet: stamped blank', lastFields()[F_FLEET], '');
     await call('POST', { draft: true, reportId: 'RP-4', patroller: 'Pat Roller', vehicle: '5010-07' });
-    eq('an attachment (not a road series) is not a match', lastFields()[F_FLEET], '');
+    eq('an attachment (not a pickup) is not a match', lastFields()[F_FLEET], '');
+    await call('POST', { draft: true, reportId: 'RP-5', patroller: 'Pat Roller', vehicle: '2121-46' });
+    eq('an active tandem (21 series) is not a match either', lastFields()[F_FLEET], '');
     record = { id: 'recREPORT00000001', fields: { 'fldiGRzVKk5PLA1y6': 'x', [F_VEH]: '2210-44', [F_FLEET]: 'recFLEETUNIT00010' } };
     record.fields[T.F.status] = F_STATUS_NAME; record.fields[T.F.patroller] = 'Pat Roller';
     await call('PATCH', { id: 'recREPORT00000001', vehicle: '1910-01' });
