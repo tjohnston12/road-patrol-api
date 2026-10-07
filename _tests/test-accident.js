@@ -76,7 +76,31 @@ Module._resolveFilename = function (r, ...rest) {
   return origResolve.call(this, r, ...rest);
 };
 let session = null;
-global.fetch = async () => (session ? { ok: true, status: 200, json: async () => session } : { ok: false, status: 401, json: async () => ({}) });
+// Environment Canada (api.weather.gc.ca swob-realtime), faked: stations along the corridor.
+let WX = { down: false, calls: [] };
+const T0 = Date.now() - 2 * 3600e3;                 // "the accident", two hours ago
+const iso = ms => new Date(ms).toISOString();
+const STN = { sussex: ['SUSSEX FOUR CORNERS', 'MSC', -65.529, 45.742], moncton: ['Moncton/Greater Moncton Romeo Le', 'NAV CANADA', -64.679, 46.116],
+  fred: ['Fredericton', 'NAV CANADA', -66.537, 45.869] };
+const wxObs = (stn, ms, extra, id) => ({ id: id || `x-${stn}-${ms}-swob.xml`, geometry: { coordinates: [STN[stn][2], STN[stn][3], 30] },
+  properties: Object.assign({ 'stn_nam-value': STN[stn][0], 'data_pvdr-value': STN[stn][1], obs_date_tm: iso(ms), 'date_tm-value': iso(ms),
+    url: `https://dd.weather.gc.ca/x/${stn}-${ms}.xml`, air_temp: 2.7, dwpt_temp: 1.1, rel_hum: 89, avg_wnd_spd_10m_pst10mts: 5.3,
+    avg_wnd_dir_10m_pst10mts: 221, max_wnd_spd_10m_pst1hr: 11, pcpn_amt_pst1hr: 0.4 }, extra || {}) });
+const WX_FEATURES = () => [
+  wxObs('sussex', T0 - 60 * 60e3, { air_temp: 9 }),
+  wxObs('sussex', T0 - 4 * 60e3),
+  wxObs('sussex', T0 - 1 * 60e3, { air_temp: 99 }, 'x-CASF-AUTO-minute-swob.xml'),       // minute report: skipped
+  wxObs('moncton', T0 - 5 * 60e3, { air_temp: 3.9, vis: 24.14, avg_wnd_spd_10m_pst2mts: 15.1, avg_wnd_dir_10m_pst2mts: 239, 'data_attrib_not-value': 'Observational data provided by NAV CANADA. All rights reserved.' }),
+  wxObs('fred', T0 + 3 * 60e3, { air_temp: 2.4, avg_vis_pst10mts: 16.09, snw_dpth: 6 }),
+];
+global.fetch = async (url) => {
+  if (String(url).includes('api.weather.gc.ca')) {
+    WX.calls.push(String(url));
+    if (WX.down) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ type: 'FeatureCollection', features: WX_FEATURES() }) };
+  }
+  return (session ? { ok: true, status: 200, json: async () => session } : { ok: false, status: 401, json: async () => ({}) });
+};
 const S = (orgRole, appRole, name) => ({ ok: true, allowed: true, appRole, apps: ['Patrol'], user: { name, email: 'x@mrdc.ca', role: orgRole, source: 'employee', employeeId: 'recE' } });
 
 const handler = require(ACC);
@@ -209,6 +233,58 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   r = await call('POST', { mva: mid, report: { vehicles: 3, hitRun: true }, submit: true });
   eq('a hit & run still needs only the damage photos', r.status, 200);
   await call('POST', { mva: mid, report: { vehicles: 1, hitRun: false } });
+
+  /* 5c — official weather (Troy: "Can we link a weather app to record official conditions at the time?") */
+  DB[T.mva][mid].fields.fldusfufZWR2nTR6U = '45.75, -65.40';          // GPS near Sussex
+  await call('POST', { mva: mid, report: { timeOfAccident: '' } });
+  delete DB[T.mva][mid].fields.fldyNaXuFj9LTbelQ;
+  r = await call('POST', { mva: mid, action: 'weather' });
+  ok('no time of accident: says to enter it', r.status === 400 && /time of the accident/.test(r.json.error), JSON.stringify(r.json));
+  await call('POST', { mva: mid, report: { timeOfAccident: iso(T0) } });
+  WX.calls = [];
+  r = await call('POST', { mva: mid, action: 'weather' });
+  const w = r.json.report;
+  eq('it records the nearest station\'s report closest to the time', [r.status, w.officialWeatherStation, w.officialWeatherAt], [200, 'SUSSEX FOUR CORNERS', iso(T0 - 4 * 60e3)]);
+  ok('…as a plain summary', /^Environment and Climate Change Canada observation — SUSSEX FOUR CORNERS \(MSC\)/.test(w.officialWeather)
+     && /4 min before the accident/.test(w.officialWeather) && /km from the scene \(GPS\)/.test(w.officialWeather)
+     && /Temperature 2\.7 °C, dew point 1\.1 °C, humidity 89%/.test(w.officialWeather) && /Wind from SW 5 km\/h, gusting 11 km\/h/.test(w.officialWeather)
+     && /Precipitation in the past hour 0\.4 mm/.test(w.officialWeather), w.officialWeather);
+  ok('…not the minute report', !/99/.test(w.officialWeather));
+  eq('…with a link to the original record', w.officialWeatherUrl, `https://dd.weather.gc.ca/x/sussex-${T0 - 4 * 60e3}.xml`);
+  ok('it asks for the hour around the accident in the corridor', WX.calls.length === 1 && /bbox=-67\.3%2C45\.3%2C-64\.0%2C46\.6/.test(WX.calls[0])
+     && WX.calls[0].includes(encodeURIComponent(iso(T0 - 75 * 60e3).replace(/\.\d+Z$/, 'Z'))), WX.calls[0]);
+  DB[T.mva][mid].fields.fldusfufZWR2nTR6U = '';
+  await call('POST', { mva: mid, report: { division: 'Eastern' } });
+  r = await call('POST', { mva: mid, action: 'weather' });
+  ok('no GPS, Eastern division: Moncton, said so', r.json.report.officialWeatherStation === 'Moncton/Greater Moncton Romeo Le'
+     && /no GPS — the Eastern division's airport was used/.test(r.json.report.officialWeather) && /Visibility 24\.1 km/.test(r.json.report.officialWeather)
+     && /Wind from WSW 15 km\/h/.test(r.json.report.officialWeather) && /NAV CANADA\. All rights reserved/.test(r.json.report.officialWeather), r.json.report.officialWeather);
+  await call('POST', { mva: mid, report: { division: 'Western' } });
+  r = await call('POST', { mva: mid, action: 'weather' });
+  ok('no GPS, Western: Fredericton, after the accident, with snow', r.json.report.officialWeatherStation === 'Fredericton' && /3 min after the accident/.test(r.json.report.officialWeather)
+     && /Snow on the ground 6 cm/.test(r.json.report.officialWeather), r.json.report.officialWeather);
+  WX.down = true;
+  r = await call('POST', { mva: mid, action: 'weather' });
+  ok('Environment Canada down: says so, keeps what was recorded', /did not answer/.test(r.json.error) && Object.values(DB[T.ar])[0].fields.fldOwrXAOQ3iqRVhh === 'Fredericton', JSON.stringify(r.json));
+  WX.down = false;
+  await call('POST', { mva: mid, report: { timeOfAccident: iso(Date.now() - 40 * 864e5) } });
+  WX.calls = [];
+  r = await call('POST', { mva: mid, action: 'weather' });
+  ok('older than 30 days: points to the historical data', r.status === 404 && /climate\.weather\.gc\.ca/.test(r.json.error) && !WX.calls.length, JSON.stringify(r.json));
+  /* on submit, if never fetched */
+  const arid = Object.keys(DB[T.ar])[0];
+  Object.assign(DB[T.ar][arid].fields, { fldMXyqLpqpBMpAjR: null, fldOwrXAOQ3iqRVhh: null, fldRa0KV1HJzLMOjH: 'Draft' });
+  DB[T.mva][mid].fields.fldusfufZWR2nTR6U = '45.75, -65.40';
+  r = await call('POST', { mva: mid, report: { timeOfAccident: iso(T0), hitRun: true }, submit: true });
+  eq('submit records the official weather if nobody did', [r.status, r.json.report.officialWeatherStation], [200, 'SUSSEX FOUR CORNERS']);
+  Object.assign(DB[T.ar][arid].fields, { fldMXyqLpqpBMpAjR: null, fldOwrXAOQ3iqRVhh: null, fldRa0KV1HJzLMOjH: 'Draft' });
+  WX.down = true;
+  r = await call('POST', { mva: mid, report: {}, submit: true });
+  eq('…and still submits when Environment Canada is down', [r.status, r.json.report.status, r.json.report.officialWeather], [200, 'Submitted', '']);
+  WX.down = false;
+  r = await call('POST', { mva: mid, report: { officialWeather: 'sunny, trust me', officialWeatherStation: 'X' } });
+  eq('the official weather cannot be typed over', r.json.report.officialWeather, '');
+  await call('POST', { mva: mid, report: { hitRun: false } });
 
   /* 6 — who may */
   session = S('Employee', 'Patroller', 'James Rodey');
