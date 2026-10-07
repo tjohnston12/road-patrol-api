@@ -691,6 +691,8 @@ const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repai
 const isImg = a => /^image\//.test(a.type || '') || /\.(jpe?g|png|webp|heic|gif)$/i.test(a.filename || '');
 // Every photo in the file, in one place — "Photos are of the utmost importance for
 // claims to be processed quickly with insurance companies" (Troy).
+const T_VEH = process.env.MVA_VEH_TABLE || 'tblpMfPIXMJhFmuuw';
+const VEH = { n: 'fldCOloDspNrByuT7', licence: 'fld8jYrCXrGqsSm9N', plate: 'fldl5T1V1XHzV5USf', trailer: 'fldQWeXpFVddoF5FS', insurance: 'fld3RVNUJQDkjFxpi' };
 async function photosFor(row) {
   const out = [];
   const add = (src, list) => arr(list).forEach(a => out.push({ source: src, id: a.id, url: a.url, filename: a.filename || '',
@@ -702,7 +704,13 @@ async function photosFor(row) {
     const ar = ((await airtable(`${BASE}/${T_AR}?${qs}`)).records || [])[0];
     if (ar) { const f = ar.fields || {};
       add('Accident report — accident', f[AR.accident]); add('Accident report — repairs', f[AR.repair]);
-      add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Trailer plate', f[AR.trailer]); add('Insurance card', f[AR.insurance]); }
+      add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Trailer plate', f[AR.trailer]); add('Insurance card', f[AR.insurance]);
+      // Vehicles 2, 3… (Accident Vehicles, api/accident.js) — their own licence / plate / card.
+      const vq = new URLSearchParams(); vq.set('returnFieldsByFieldId', 'true');
+      vq.set('filterByFormula', `FIND('${String(row.mvaNo + '-AR-V').replace(/'/g, "\\'")}',{Vehicle Ref})=1`);
+      const vrows = ((await airtable(`${BASE}/${T_VEH}?${vq}`)).records || []).sort((x, y) => (x.fields[VEH.n] || 0) - (y.fields[VEH.n] || 0));
+      for (const v of vrows) { const g = v.fields || {}, pre = 'Vehicle ' + (g[VEH.n] || '?') + ' — ';
+        add(pre + 'driver\'s licence', g[VEH.licence]); add(pre + 'licence plate', g[VEH.plate]); add(pre + 'trailer plate', g[VEH.trailer]); add(pre + 'insurance card', g[VEH.insurance]); } }
   } catch (_) { /* the photos panel is a convenience; never fail the read over it */ }
   for (const r of await folderRows(row.mvaNo)) {
     const f = r.fields || {};
