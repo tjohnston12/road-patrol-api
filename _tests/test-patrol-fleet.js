@@ -93,6 +93,8 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     T.resetFleetCache(); fleetDown = true;
     const r2 = await call('GET', null, { meta: '1' });
     eq('Fleet DB unreadable: empty list, meta still answers', [r2.code, r2.body.choices.fleet], [200, []]);
+    eq('…and says why, without data', r2.body.choices.fleetNote, 'Fleet DB could not be read (403): INVALID_PERMISSIONS');
+    ok('a readable fleet carries no note', !('fleetNote' in r.body.choices), JSON.stringify(Object.keys(r.body.choices)));
     /* 4 — stamping */
     writes = [];
     await call('POST', { draft: true, reportId: 'RP-1', patroller: 'Pat Roller', vehicle: '2210-44' });
