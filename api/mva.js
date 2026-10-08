@@ -74,6 +74,7 @@ const F = {
   animalCount:    'fldAsBgbvYvH0BFwZ',
   photos:         'fldXN5USProy2fNVx',
   summary:        'fldQBjjZNYPVpUaaW',
+  notAtScene:     'fldAHBI3DRccnKHLk', // Troy, 2026-10-08: photos mandatory unless the patroller did not attend
   dmtWo:          'fldh1qB5gUhhPlrxS',
   status:         'fldNRjvZEFolYv9uq',
   notifiedAt:     'fldCFjoigjFgQwuv5',
@@ -159,6 +160,7 @@ function shape(rec) {
     animalCount:    f[F.animalCount] != null ? f[F.animalCount] : null,
     photos:         arr(f[F.photos]).map(a => ({ id: a.id, url: a.url, filename: a.filename, thumb: a.thumbnails?.small?.url || '' })),
     summary:        f[F.summary] || '',
+    notAtScene:     !!f[F.notAtScene],
     dmtWo:          f[F.dmtWo] || '',
     status:         sel(f[F.status]) || 'Notified',
     notifiedAt:     f[F.notifiedAt] || '',
@@ -262,7 +264,7 @@ function toFields(b, mvaNo) {
   [['injuries','injuries'],['fatality','fatality'],['spill','spill'],['doeCalled','doeCalled'],
    ['fire','fire'],['damages','damages'],['hitRun','hitRun'],['extensiveTC','extensiveTC'],
    ['blocked','blocked'],['towGo','towGo'],['redLights','redLights'],['pinkSign','pinkSign'],
-   ['roadkill','roadkill']].forEach(([key, prop]) => { f[F[key]] = !!b[prop]; });
+   ['roadkill','roadkill'],['notAtScene','notAtScene']].forEach(([key, prop]) => { f[F[key]] = !!b[prop]; });
 
   f[F.source]      = 'Road Patrol app';
   f[F.status]      = 'Notified';
@@ -292,7 +294,7 @@ function notificationHtml(row) {
     ['When', row.occurredAt ? String(row.occurredAt).replace('T', ' ').slice(0, 16) : row.date],
     ['Where', [row.route, row.km != null ? 'km ' + Number(row.km).toFixed(3) : '', row.direction, row.ramp].filter(Boolean).join(' · ')],
     ['Division', row.division],
-    ['Patroller', row.patroller],
+    ['Patroller', row.patroller + (row.notAtScene ? ' — did not attend the scene' : '')],
     ['Vehicles involved', row.vehicles != null ? String(row.vehicles) : '—'],
     ['Emergency services', (row.services || []).join(', ') || 'None'],
     ['Police file no.', row.policeFile || '—'],
