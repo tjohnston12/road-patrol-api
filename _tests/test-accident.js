@@ -351,6 +351,28 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   r = await call('GET', null, { mva: tm });
   eq('patrol reports unreadable: the page still opens, no truck', [r.status, r.json.truck.fromReport], [200, null]);
 
+  /* Traffic control called in (Troy, 2026-10-08): more than one person, and the equipment */
+  eq('crew: rows with no name dropped, bad times blanked, trimmed', AL.cleanCrew([{ name: ' Ross Stewart ', unit: '2210-44', called: '2026-10-06T17:10:00.000Z', arrived: 'soon', left: '' }, { name: '', unit: 'x' }, 'junk']),
+    [{ name: 'Ross Stewart', unit: '2210-44', called: '2026-10-06T17:10:00.000Z', arrived: '', left: '' }]);
+  eq('equipment: only the listed kinds', AL.cleanEquip([{ kind: 'Arrow board', unit: 'AB-3', arrived: '2026-10-06T17:30:00.000Z', notes: 'WB lane 2' }, { kind: 'Spaceship' }]).map(x => x.kind), ['Arrow board']);
+  eq('the kinds', AL.EQUIP_KINDS, ['Arrow board', 'Message board', 'Truck', 'TMA truck', 'Light tower', 'Trailer', 'Other']);
+  ok('no more than 20 rows', AL.cleanCrew(Array.from({ length: 30 }, (_, i) => ({ name: 'P' + i }))).length === 20);
+  reset(); session = S('Employee', 'Patroller', 'Tom Gibson');
+  const tcm = seedMva();
+  r = await call('POST', { mva: tcm, report: { tcMoreNeeded: true,
+    tcCrew: [{ name: 'Ross Stewart', unit: '2210-44', called: '2026-10-06T17:10:00.000Z', arrived: '2026-10-06T17:40:00.000Z', left: '2026-10-06T20:00:00.000Z' }, { name: 'James Rodey', unit: '1621-50' }],
+    tcEquip: [{ kind: 'Arrow board', unit: 'AB-3', arrived: '2026-10-06T17:45:00.000Z' }, { kind: 'TMA truck', unit: '2021-48' }] } });
+  const tcr = Object.values(DB[T.ar])[0].fields;
+  eq('two people and two pieces of equipment saved', [r.status, JSON.parse(tcr.fldVgzdsCUiBrAoc7).length, JSON.parse(tcr.flducXz11j7WstOrZ).map(x => x.kind)], [200, 2, ['Arrow board', 'TMA truck']]);
+  eq('…the first person also fills the old single fields', [tcr.fldIGwoRmBlonTyFU, tcr.fldtD9Mu4TkwaligD, tcr.fld3Klt1G5flvGUNg], ['Ross Stewart', '2210-44', '2026-10-06T17:10:00.000Z']);
+  eq('…and they read back', [r.json.report.tcCrew.map(x => x.name), r.json.report.tcEquip.map(x => x.unit)], [['Ross Stewart', 'James Rodey'], ['AB-3', '2021-48']]);
+  r = await call('POST', { mva: tcm, report: { tcCrew: [] } });
+  eq('clearing the crew clears the old fields too', [Object.values(DB[T.ar])[0].fields.fldVgzdsCUiBrAoc7, Object.values(DB[T.ar])[0].fields.fldIGwoRmBlonTyFU, r.json.report.tcCrew], ['', '', []]);
+  Object.values(DB[T.ar])[0].fields.fldIGwoRmBlonTyFU = 'Old Single'; Object.values(DB[T.ar])[0].fields.fldtD9Mu4TkwaligD = 'U-1';
+  r = await call('GET', null, { mva: tcm });
+  eq('a report from before the list: its one person becomes the first row', r.json.report.tcCrew.map(x => [x.name, x.unit]), [['Old Single', 'U-1']]);
+  ok('GET carries the equipment kinds and the people / unit lists', Array.isArray(r.json.choices.equipKinds) && r.json.tc && Array.isArray(r.json.tc.people) && Array.isArray(r.json.tc.units));
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-accident: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
