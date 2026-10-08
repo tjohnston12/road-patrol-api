@@ -74,7 +74,13 @@ const F = {
   animalCount:    'fldAsBgbvYvH0BFwZ',
   photos:         'fldXN5USProy2fNVx',
   summary:        'fldQBjjZNYPVpUaaW',
-  notAtScene:     'fldAHBI3DRccnKHLk', // Troy, 2026-10-08: photos mandatory unless the patroller did not attend
+  blockedDetails: 'fldDzE2ieyGMJvzHX', // Troy, 2026-10-08: highway blocked = Yes asks for an explanation
+  notAtScene:     'fldAHBI3DRccnKHLk',
+  // Troy, 2026-10-08: extensive traffic control = Yes asks whether more resources were called, and which;
+  // and every MVA says whether it was in a work zone or lane closure set-up.
+  addlResCalled:  'flda3yffoXFPwvLaV',
+  addlResources:  'fldkaLm8VfuPnKXj6',
+  workZone:       'fldCz8TiEIlG0BYfE', // Troy, 2026-10-08: photos mandatory unless the patroller did not attend
   dmtWo:          'fldh1qB5gUhhPlrxS',
   status:         'fldNRjvZEFolYv9uq',
   notifiedAt:     'fldCFjoigjFgQwuv5',
@@ -163,6 +169,10 @@ function shape(rec) {
     photos:         arr(f[F.photos]).map(a => ({ id: a.id, url: a.url, filename: a.filename, thumb: a.thumbnails?.small?.url || '' })),
     summary:        f[F.summary] || '',
     notAtScene:     !!f[F.notAtScene],
+    blockedDetails: f[F.blockedDetails] || '',
+    addlResCalled:  !!f[F.addlResCalled],
+    addlResources:  f[F.addlResources] || '',
+    workZone:       !!f[F.workZone],
     dmtWo:          f[F.dmtWo] || '',
     status:         sel(f[F.status]) || 'Notified',
     notifiedAt:     f[F.notifiedAt] || '',
@@ -256,6 +266,8 @@ function toFields(b, mvaNo) {
   set(F.damageDesc,     b.damageDesc);
   set(F.towCompany,     b.towCompany);
   set(F.summary,        b.summary);
+  if (b.blocked) set(F.blockedDetails, String(b.blockedDetails || '').trim().slice(0, 2000));
+  if (b.extensiveTC && b.addlResCalled) set(F.addlResources, String(b.addlResources || '').trim().slice(0, 2000));
   set(F.submittedBy,    b.submittedBy);
   n(F.km,          b.km);
   n(F.vehicles,    b.vehicles);
@@ -266,7 +278,8 @@ function toFields(b, mvaNo) {
   [['injuries','injuries'],['fatality','fatality'],['spill','spill'],['doeCalled','doeCalled'],
    ['fire','fire'],['damages','damages'],['hitRun','hitRun'],['extensiveTC','extensiveTC'],
    ['blocked','blocked'],['towGo','towGo'],['redLights','redLights'],['pinkSign','pinkSign'],
-   ['roadkill','roadkill'],['notAtScene','notAtScene']].forEach(([key, prop]) => { f[F[key]] = !!b[prop]; });
+   ['roadkill','roadkill'],['notAtScene','notAtScene'],['workZone','workZone']].forEach(([key, prop]) => { f[F[key]] = !!b[prop]; });
+  f[F.addlResCalled] = !!(b.extensiveTC && b.addlResCalled);
 
   f[F.source]      = 'Road Patrol app';
   f[F.status]      = 'Notified';
@@ -284,7 +297,8 @@ function flagList(row) {
   if (row.damages)     flags.push('Damages to facility');
   if (row.hitRun)      flags.push('Hit &amp; run');
   if (row.blocked)     flags.push('Highway blocked' + (row.lanes ? ' — ' + esc(row.lanes) : ''));
-  if (row.extensiveTC) flags.push('Extensive traffic control');
+  if (row.extensiveTC) flags.push('Extensive traffic control' + (row.addlResCalled ? ' — additional resources called' : ''));
+  if (row.workZone)    flags.push('In a work zone / lane closure');
   return flags;
 }
 
@@ -314,6 +328,8 @@ function notificationHtml(row) {
       <td style="padding:7px 0;font-weight:500">${esc(v || '—')}</td></tr>`).join('')}
   </table>
   ${row.summary ? `<div style="background:#f7f7f5;border:1px solid #DDD9D0;border-radius:8px;padding:12px 14px;white-space:pre-wrap">${esc(row.summary)}</div>` : ''}
+  ${row.addlResCalled && row.addlResources ? `<p style="margin-top:14px"><b>Additional resources called:</b> ${esc(row.addlResources)}</p>` : ''}
+  ${row.blocked && row.blockedDetails ? `<p style="margin-top:14px"><b>Highway blocked:</b> ${esc(row.blockedDetails)}</p>` : ''}
   ${row.damages && row.damageDesc ? `<p style="margin-top:14px"><b>Damage:</b> ${esc(row.damageDesc)}</p>` : ''}
   ${row.arRequired ? `<p style="margin-top:14px;color:#A32D2D"><b>An accident report is required for this MVA.</b></p>` : ''}
   ${row.invRequired ? `<p style="margin-top:6px;color:#A32D2D"><b>Hit &amp; run — an investigation report is required.</b></p>` : ''}
@@ -607,6 +623,10 @@ module.exports = async function handler(req, res) {
       if (!CHOICES.divisions.includes(body.division)) return res.status(400).json({ error: 'Select the division' });
       // A spill is a regulatory call-out, not a checkbox — refuse the report
       // until the patroller confirms Dept. of Environment was notified.
+      if (body.blocked && !String(body.blockedDetails || '').trim())
+        return res.status(400).json({ error: 'Highway blocked — explain what is blocked and how.' });
+      if (body.extensiveTC && body.addlResCalled && !String(body.addlResources || '').trim())
+        return res.status(400).json({ error: 'Additional resources were called — say which.' });
       if (body.spill && !body.doeCalled)
         return res.status(400).json({ error: 'A spill requires the Department of Environment to be called — confirm before submitting.' });
 
