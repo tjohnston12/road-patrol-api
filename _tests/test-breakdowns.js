@@ -158,8 +158,18 @@ const FLEET = [{ unit: '1621-50', recId: 'recF1', depot: 'River Glade', make: 'I
   session = S('Tom Gibson');
   X.resetFleet();
   const meta = (await call('GET', { meta: '1' })).body;
-  eq('meta: the active fleet only, any series, with descriptions', meta.fleet.map(u => [u.unit, u.depot, u.description]),
-    [['1621-50', 'River Glade', 'International · D13 U-Body'], ['2021-48', 'Oromocto', 'Ford F550 · Mechanic Truck']]);
+  eq('meta: the active fleet only, with descriptions, SNIC first, the rest after', meta.fleet.map(u => [u.unit, u.depot, u.description, u.group]),
+    [['1621-50', 'River Glade', 'International · D13 U-Body', 'snic'], ['2021-48', 'Oromocto', 'Ford F550 · Mechanic Truck', '']]);
+  eq('…with the group labels', meta.unitGroups.map(g => g.label), ['SNIC equipment', 'One tons', 'Pickups']);
+  // Troy, 2026-10-08: "primarily used by patrollers to record when SNIC equipment is down, one tons, and pickups can be included"
+  const G = (series, designation) => X.unitGroup({ series, designation });
+  eq('groups: plow truck, loader, snow blower, tow-behind plow, spreader, wing, brine → SNIC',
+    [G('21', 'D13 U-Body'), G('30', 'Loader'), G('33', 'Snow Blower'), G('40', 'tow behind plow'), G('50', 'Frame Mount Spreader'), G('50', ' Everest left wing mounted on 321-37'), G('50', '8100 L (Brine)')],
+    ['snic', 'snic', 'snic', 'snic', 'snic', 'snic', 'snic']);
+  eq('…a TMA, a mower, a trailer, a cone truck are not', [G('50', 'Traffic Control TMA MS00985'), G('33', 'Mowing'), G('40', 'Enclosed Trailer'), G('20', '4300 Cone Truck')], ['', '', '', '']);
+  eq('…one tons and pickups', [G('12', 'West Operations'), G('10', 'East Patroller')], ['oneton', 'pickup']);
+  eq('…ordered SNIC, one tons, pickups, then the rest', X.fleetForPicker([{ unit: '1910-01', series: '10' }, { unit: '2021-48', series: '20' }, { unit: '1712-02', series: '12' },
+    { unit: '2321-10', series: '21' }, { unit: '1621-37', series: '21' }]).map(u => u.unit), ['1621-37', '2321-10', '1712-02', '1910-01', '2021-48']);
   eq('meta: depots include Mazerolle; EB / WB', [meta.depots, meta.directions], [['Oromocto', 'Mazerolle', 'Bagdad', 'River Glade'], ['EB', 'WB']]);
   let r = await call('POST', {}, { ...PUB });
   eq('public: 201, Open, emailed', [r.code, r.body.breakdown.status, r.body.email && r.body.email.sent], [201, 'Open', 5]);

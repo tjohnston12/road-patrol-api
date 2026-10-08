@@ -38,7 +38,7 @@ const PAGE2 = [unit('recFLEETUNIT00021', '2121-46', 'Active', '21', 'Tandem', 'B
 const F_VEH = 'fldRAvwQ4q1rQQnRy', F_FLEET = 'fldrRoU6PzrdVHiOm', F_STATUS_NAME = 'In progress';
 let fleetCalls = [], fleetDown = false, writes = [], record = null;
 // What past reports hold today: test entries, a rental, typos, and real pickups.
-const LEARNED = ['TEST-0001', 'TEST-0010', 'R-4471', '2210-44', '1910-01', '2210-44', 'test', '1950-07', '2121-46', '710-07', '19100'];
+const LEARNED = ['TEST-0001', 'TEST-0010', 'R-4471', '2210-44', '1910-01', '2210-44', 'test', '1950-07', '2121-46', '710-07', '19100', '1410-23'];
 const airtable = async (p, opt = {}) => {
   const url = new URL('https://api.airtable.com/v0/' + p);
   const m = (opt.method || 'GET').toUpperCase();
@@ -91,12 +91,14 @@ const lastFields = () => (writes[writes.length - 1] || {}).fields || {};
     /* 2 */
     const r = await call('GET', null, { meta: '1' });
     eq('meta carries the fleet list', [r.code, (r.body.choices.fleet || []).length], [200, 3]);
-    eq('…and the numbers from past reports — 10-series pickups only (no TEST-…, no rental, no tandem)', r.body.choices.vehicles, ['1910-01', '2210-44', '710-07']);
+    // Troy, 2026-10-08: "be sure to exclude all retired equipment from all pick lists"
+    eq('…and the numbers from past reports that are ACTIVE units (no retired 1410-23, no 710-07 off the fleet, no TEST-…, no rental, no tandem)', r.body.choices.vehicles, ['1910-01', '2210-44']);
     ok('…the pickup pattern', ['1910-01', '2210-44', '710-07', '2310 23', '1010-204'].every(v => T.PICKUP_NO.test(v)) && !['TEST-0001', 'R-4471', '1950-07', '2121-46', '19100', '1910-'].some(v => T.PICKUP_NO.test(v)));
     /* 3 */
     T.resetFleetCache(); fleetDown = true;
     const r2 = await call('GET', null, { meta: '1' });
     eq('Fleet DB unreadable: empty list, meta still answers', [r2.code, r2.body.choices.fleet], [200, []]);
+    eq('…the learned list stands in, unfiltered', r2.body.choices.vehicles, ['1410-23', '1910-01', '2210-44', '710-07']);
     eq('…and says why, without data', r2.body.choices.fleetNote, 'Fleet DB could not be read (403): INVALID_PERMISSIONS');
     ok('a readable fleet carries no note', !('fleetNote' in r.body.choices), JSON.stringify(Object.keys(r.body.choices)));
     /* 4 — stamping */
