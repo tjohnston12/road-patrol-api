@@ -170,6 +170,18 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
     ok(`…including ${item}`, m.html.includes(item));
   ok('…and names who builds it', /Tom Gibson builds and completes the folder/.test(m.html));
 
+  /* Troy, 2026-10-08: all routes; route and division required */
+  reset();
+  r = await call('POST', { ...BASE_MVA, route: 'Route 8' });
+  eq('Route 8 is accepted (all four routes)', [r.status, DB[Object.keys(DB)[0]] && DB[Object.keys(DB)[0]].fields.fldCbe3KQ2xm7Dgs3], [200, 'Route 8']);
+  reset();
+  r = await call('POST', { ...BASE_MVA, route: '' });
+  ok('no route: refused, nothing written', r.status === 400 && /route/.test(r.json.error) && !Object.keys(DB).length, JSON.stringify(r.json));
+  r = await call('POST', { ...BASE_MVA, division: '' });
+  ok('no division: refused', r.status === 400 && /division/.test(r.json.error));
+  reset();
+  r = await call('POST', BASE_MVA);
+
   /* Not at scene (Troy, 2026-10-08): photos are mandatory unless the patroller did not attend */
   eq('attended: Not At Scene written as a real no', DB[Object.keys(DB)[0]].fields.fldAHBI3DRccnKHLk, false);
   ok('…and the email does not say otherwise', !/did not attend/.test(m.html));
