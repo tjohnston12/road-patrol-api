@@ -109,7 +109,9 @@ const F = {
 
 const CHOICES = {
   divisions:  ['Eastern', 'Western'],
-  routes:     ['Route 2', 'Route 7', 'Other'],
+  // Troy, 2026-10-08: "Route dropdown, it should show all routes." Route 1 and Route 8 are added to
+  // the Airtable select on first use (the create sends typecast).
+  routes:     ['Route 1', 'Route 2', 'Route 7', 'Route 8', 'Other'],
   directions: ['EB', 'WB', 'NB', 'SB'],
   services:   ['Police (RCMP)', 'Ambulance', 'Fire', 'Dept. of Environment', 'Tow', 'DTI', 'None'],
   // 'Ramp' added 2026-10-06 (Troy: "for lanes blocked on mva can you add Ramp").
@@ -599,6 +601,10 @@ module.exports = async function handler(req, res) {
       if (!CHOICES.directions.includes(body.direction))
                            return res.status(400).json({ error: 'Direction is required — it forms part of the MVA number' });
       if (!body.patroller) return res.status(400).json({ error: 'Patroller is required' });
+      // Troy, 2026-10-08: "Make all boxes mandatory" — the page checks every question; the server
+      // holds the two that are plain values (the yes/no answers arrive as booleans).
+      if (!CHOICES.routes.includes(body.route)) return res.status(400).json({ error: 'Select the route' });
+      if (!CHOICES.divisions.includes(body.division)) return res.status(400).json({ error: 'Select the division' });
       // A spill is a regulatory call-out, not a checkbox — refuse the report
       // until the patroller confirms Dept. of Environment was notified.
       if (body.spill && !body.doeCalled)
