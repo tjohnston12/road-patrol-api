@@ -170,6 +170,14 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
     ok(`…including ${item}`, m.html.includes(item));
   ok('…and names who builds it', /Tom Gibson builds and completes the folder/.test(m.html));
 
+  /* Not at scene (Troy, 2026-10-08): photos are mandatory unless the patroller did not attend */
+  eq('attended: Not At Scene written as a real no', DB[Object.keys(DB)[0]].fields.fldAHBI3DRccnKHLk, false);
+  ok('…and the email does not say otherwise', !/did not attend/.test(m.html));
+  reset();
+  r = await call('POST', { ...BASE_MVA, notAtScene: true });
+  eq('not at scene: recorded', [r.status, DB[Object.keys(DB)[0]].fields.fldAHBI3DRccnKHLk, r.json.row.notAtScene], [200, true, true]);
+  ok('…and the email says the patroller did not attend', /Tom Gibson — did not attend the scene/.test((mails[0] || {}).html || ''));
+
   reset();
   r = await call('POST', { ...BASE_MVA, damages: false, damageDesc: '', blocked: true });
   ok('no accident report needed: no folder', !/Accident file folder/.test((mails[0] || {}).html || ''));
