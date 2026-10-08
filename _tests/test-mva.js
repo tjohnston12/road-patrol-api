@@ -452,6 +452,25 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('no manager on file: the Operations Manager verifies', r.json.row.verifier, 'Michael Park');
   EMP = EMP.map(e => e.name === 'Tom Gibson' ? Object.assign({}, e, { manager: 'Derek Melanson' }) : e);
 
+  /* 11 — recent MVAs for the Timesheets picker (2026-10-08). Operators called in for
+     traffic control have no Patrol app, so any signed-in employee may read the list —
+     number and where/when only. */
+  reset();
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+  r = await call('POST', BASE_MVA); DB[r.json.row.id].fields.fld8dDEK0xlJqPUzS = day(1);
+  const recentNo = DB[r.json.row.id].fields.flddJ5v5jZ9rv4VWg;
+  r = await call('POST', Object.assign({}, BASE_MVA, { km: 410 })); DB[r.json.row.id].fields.fld8dDEK0xlJqPUzS = day(40);
+  session = Object.assign(S('Employee', '', 'Ollie Operator'), { allowed: false, apps: ['Time'] });
+  eq('an operator without Patrol cannot list the MVAs', (await call('GET', null, {})).status, 401);
+  r = await call('GET', null, { view: 'recent' });
+  eq('…but gets the recent ones for the picker (older than 14 days left off)', [r.status, r.json.rows.map(x => x.mvaNo)], [200, [recentNo]]);
+  eq('…number and where/when only', Object.keys(r.json.rows[0]).sort(), ['date', 'direction', 'division', 'km', 'mvaNo', 'occurredAt', 'ramp', 'route']);
+  r = await call('GET', null, { view: 'recent', days: '60' });
+  eq('…60 days asks further back', r.json.rows.length, 2);
+  session = null;
+  eq('signed out: refused', (await call('GET', null, { view: 'recent' })).status, 401);
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
