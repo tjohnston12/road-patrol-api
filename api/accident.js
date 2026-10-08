@@ -84,7 +84,7 @@ const V_BOOL = ['driverIsOwner', 'hasTrailer'];
 const V_PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', trailer: 'trailerPlatePhoto', insurance: 'insurancePhoto' };
 const MAX_VEHICLES = 10;
 const CHOICES = {
-  divisions: ['Eastern', 'Western'], routes: ['Route 2', 'Route 7', 'Other'], directions: ['EB', 'WB', 'NB', 'SB'],
+  divisions: ['Eastern', 'Western'], routes: ['Route 1', 'Route 2', 'Route 7', 'Route 8', 'Other'], directions: ['EB', 'WB', 'NB', 'SB'],   // all routes (Troy, 2026-10-08)
   ramps: ['ON Ramp', 'OFF Ramp'], ynu: ['Yes', 'No', 'Unknown'],
   items: ['None', 'Signs', 'First Aid Kit', 'Spill Kit', 'Fire Extinguisher'],
 };
@@ -200,7 +200,8 @@ async function ensureReport(mva, caller) {
     [A.startedBy]: caller.name || '', [A.startedAt]: new Date().toISOString() } }) });
 }
 async function patch(id, fields) {
-  return airtable(`${M.BASE}/${T_AR}/${id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields }) });
+  // typecast: Route 1 and Route 8 join the Accident Reports Route select on first use (2026-10-08).
+  return airtable(`${M.BASE}/${T_AR}/${id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, typecast: true, fields }) });
 }
 // Tick a folder item done (MVA File Folder), as the folder page does.
 function tick(caller, now) {
@@ -302,6 +303,47 @@ function photosMissing(r, mva) {
   }
   return out;
 }
+/* ---- The patrol truck (Troy, 2026-10-08: "does the patrol truck have a drop down list from fleet
+   or can it fill from the patrol report that has been started" — both). The fleet list is the
+   daily report's (10-series pickups, from patrol.js); the truck comes from the MVA patroller's
+   own patrol report for that shift: the one whose shift covers the time of the MVA, else one
+   from that day, else the day before (a night shift). Never fatal — the box stays typeable. */
+const P = require('./patrol').__test;
+const PR = { base: process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe', table: process.env.PATROL_TABLE || 'tblosu2dzKTwhuHnf' };
+function dayBefore(d) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); }
+function pickReport(rows, mva) {
+  const at = mva.occurredAt ? new Date(mva.occurredAt).getTime() : NaN, day = mva.date || '';
+  const withVeh = rows.filter(r => r.vehicle);
+  const covers = withVeh.filter(r => r.start && !isNaN(at) && new Date(r.start).getTime() <= at && (!r.end || new Date(r.end).getTime() >= at));
+  if (covers.length) return covers.sort((a, b) => b.start.localeCompare(a.start))[0];
+  const same = withVeh.filter(r => r.date === day).sort((a, b) => (b.start || '').localeCompare(a.start || ''));
+  if (same.length) return same[0];
+  const prev = withVeh.filter(r => r.date === dayBefore(day)).sort((a, b) => (b.start || '').localeCompare(a.start || ''));
+  return prev[0] || null;
+}
+async function truckFromReport(mva) {
+  try {
+    const name = String(mva.patroller || '').trim().toLowerCase();
+    if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(mva.date || '')) return null;
+    const qs = new URLSearchParams();
+    qs.set('returnFieldsByFieldId', 'true'); qs.set('pageSize', '20');
+    for (const k of ['reportId', 'shiftDate', 'patroller', 'vehicle', 'shiftStart', 'shiftEnd']) qs.append('fields[]', P.F[k]);
+    const esc = v => v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    qs.set('filterByFormula', `AND(LOWER(TRIM({Patroller}))='${esc(name)}', OR(DATETIME_FORMAT({Shift Date},'YYYY-MM-DD')='${mva.date}', DATETIME_FORMAT({Shift Date},'YYYY-MM-DD')='${dayBefore(mva.date)}'))`);
+    const j = await airtable(`${PR.base}/${PR.table}?${qs}`);
+    const rows = (j.records || []).map(r => { const f = r.fields || {}; return { reportId: f[P.F.reportId] || '', date: f[P.F.shiftDate] || '',
+      patroller: String(f[P.F.patroller] || ''), vehicle: String(f[P.F.vehicle] || '').trim(), start: f[P.F.shiftStart] || '', end: f[P.F.shiftEnd] || '' }; })
+      .filter(r => r.patroller.trim().toLowerCase() === name);       // re-checked here: the formula is not trusted alone
+    const hit = pickReport(rows, mva);
+    return hit ? { vehicle: hit.vehicle, reportId: hit.reportId, shiftDate: hit.date } : null;
+  } catch (_) { return null; }
+}
+async function truckChoices() {
+  const fleet = await P.getFleet().catch(() => []);
+  return fleet.map(u => ({ unit: u.unit, patrol: /patrol/i.test(u.designation || ''), depot: u.depot || '',
+    description: [u.make && u.model && u.model.toLowerCase().startsWith(u.make.toLowerCase()) ? u.model : [u.make, u.model].filter(Boolean).join(' '), u.designation].filter(Boolean).join(' · ') }));
+}
+
 function missingFor(r, mva) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label).concat(photosMissing(r, mva)); }
 
 module.exports = async function handler(req, res) {
@@ -315,7 +357,9 @@ module.exports = async function handler(req, res) {
       if (!mva) return res.status(404).json(M.NOT_FOUND);
       res.setHeader('Cache-Control', 'no-store');
       const found = await findReport(mva);
-      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva) });
+      const [fleet, fromReport] = await Promise.all([truckChoices(), truckFromReport(mva)]);
+      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva),
+        truck: { fleet, fromReport } });
     }
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const body = L.parseBody(req);
@@ -401,4 +445,4 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount };
+module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount, pickReport, truckFromReport, truckChoices, dayBefore };
