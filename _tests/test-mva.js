@@ -182,6 +182,32 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   reset();
   r = await call('POST', BASE_MVA);
 
+  /* Extensive TC: additional resources; work zone (Troy, 2026-10-08) */
+  reset();
+  r = await call('POST', { ...BASE_MVA });
+  eq('no work zone, no extensive TC: both written as a real no', [DB[Object.keys(DB)[0]].fields.fldCz8TiEIlG0BYfE, DB[Object.keys(DB)[0]].fields.flda3yffoXFPwvLaV], [false, false]);
+  reset();
+  r = await call('POST', { ...BASE_MVA, extensiveTC: true, addlResCalled: true });
+  ok('additional resources called but not named: refused', r.status === 400 && /say which/.test(r.json.error) && !Object.keys(DB).length, JSON.stringify(r.json));
+  r = await call('POST', { ...BASE_MVA, extensiveTC: true, addlResCalled: true, addlResources: 'Second patrol truck and the Oromocto TC crew', workZone: true });
+  const wz = DB[Object.keys(DB)[0]].fields;
+  eq('…named: recorded with the work zone', [r.status, wz.flda3yffoXFPwvLaV, wz.fldkaLm8VfuPnKXj6, wz.fldCz8TiEIlG0BYfE], [200, true, 'Second patrol truck and the Oromocto TC crew', true]);
+  ok('…the email flags both and names the resources', /Extensive traffic control — additional resources called/.test(mails[0].html) && /In a work zone \/ lane closure/.test(mails[0].html) &&
+    /Additional resources called:<\/b> Second patrol truck/.test(mails[0].html));
+  reset();
+  r = await call('POST', { ...BASE_MVA, extensiveTC: false, addlResCalled: true, addlResources: 'x' });
+  eq('resources without extensive TC are not recorded', [r.status, DB[Object.keys(DB)[0]].fields.flda3yffoXFPwvLaV, DB[Object.keys(DB)[0]].fields.fldkaLm8VfuPnKXj6], [200, false, undefined]);
+
+  /* Highway blocked details (Troy, 2026-10-08) */
+  reset();
+  r = await call('POST', { ...BASE_MVA, blocked: true, lanes: 'Both lanes' });
+  ok('highway blocked with no details: refused, nothing written', r.status === 400 && /explain what is blocked/.test(r.json.error) && !Object.keys(DB).length, JSON.stringify(r.json));
+  r = await call('POST', { ...BASE_MVA, blocked: true, lanes: 'Both lanes', blockedDetails: 'Both WB lanes closed at km 303, traffic on the shoulder' });
+  eq('…with details: recorded', [r.status, DB[Object.keys(DB)[0]].fields.fldDzE2ieyGMJvzHX], [200, 'Both WB lanes closed at km 303, traffic on the shoulder']);
+  ok('…and in the email', /Highway blocked:<\/b> Both WB lanes closed at km 303/.test((mails[0] || {}).html || ''));
+  reset();
+  r = await call('POST', BASE_MVA);
+
   /* Not at scene (Troy, 2026-10-08): photos are mandatory unless the patroller did not attend */
   eq('attended: Not At Scene written as a real no', DB[Object.keys(DB)[0]].fields.fldAHBI3DRccnKHLk, false);
   ok('…and the email does not say otherwise', !/did not attend/.test(m.html));
@@ -191,7 +217,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   ok('…and the email says the patroller did not attend', /Tom Gibson — did not attend the scene/.test((mails[0] || {}).html || ''));
 
   reset();
-  r = await call('POST', { ...BASE_MVA, damages: false, damageDesc: '', blocked: true });
+  r = await call('POST', { ...BASE_MVA, damages: false, damageDesc: '', blocked: true, blockedDetails: 'Both WB lanes closed, traffic on the shoulder' });
   ok('no accident report needed: no folder', !/Accident file folder/.test((mails[0] || {}).html || ''));
   eq('…and the subject flags the blocked highway', (mails[0] || {}).subject, 'MVA 2026-10-06-303.000-EB — Highway blocked');
 
@@ -231,12 +257,12 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   r = await call('GET', null, { meta: '1' });
   ok('Ramp is offered for lanes blocked', (r.json.choices.lanes || []).includes('Ramp'), JSON.stringify(r.json.choices.lanes));
   reset();
-  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, lanes: 'Ramp' });
+  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, blockedDetails: 'Both WB lanes closed, traffic on the shoulder', lanes: 'Ramp' });
   eq('Ramp is saved', DB[r.json.row.id].fields.fldD7oUvWiKXgp8pJ, 'Ramp');
   eq('…and flagged in the subject', (mails[0] || {}).subject, 'MVA 2026-10-06-303.000-EB — Highway blocked — Ramp');
   ok('the create lets Airtable add the choice on first use (typecast)', writes[0] && writes[0].typecast === true);
   reset();
-  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, lanes: 'Somewhere else' });
+  r = await call('POST', { ...BASE_MVA, damages: false, blocked: true, blockedDetails: 'Both WB lanes closed, traffic on the shoulder', lanes: 'Somewhere else' });
   ok('a lanes value not on the list is dropped', !('fldD7oUvWiKXgp8pJ' in DB[r.json.row.id].fields));
 
   /* 7 — the switch: Owner test while Troy tests */
