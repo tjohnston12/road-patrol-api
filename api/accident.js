@@ -51,6 +51,7 @@ const A = {
   tcByMrdc: 'fldbB8xl51lh1b2BF', tcEmployee: 'fldIGwoRmBlonTyFU', tcUnit: 'fldtD9Mu4TkwaligD',
   tcCalled: 'fld3Klt1G5flvGUNg', tcArrived: 'fldybzk4jnKCu169C', tcLeft: 'fld6FCWVHL0EpXW7d',
   tcMoreText: 'fld8y4jZC70fl2nTF', tcMoreNeeded: 'fldrjl9tzvUkJHX61',
+  tcCrew: 'fldVgzdsCUiBrAoc7', tcEquip: 'flducXz11j7WstOrZ',   // Troy, 2026-10-08: more than one person, and the equipment
   roadCond: 'fldkInCPQxKuqEkIh', weather: 'fldGz0xuDoHUGZN8n', damages: 'fldxgA24OZTG4QRSa',
   itemsText: 'fldDWhwKmn6sew6sH', items: 'fldVkA60qvqGoK9Zk',
   driver: 'fldTskwroWMBDCjZq', driverIsOwner: 'fldD9VbHyw04cUmgH', owner: 'fldqH8sRqUBMt8fdS', trucking: 'fldwyd11uvJYY06hM',
@@ -114,8 +115,33 @@ function toFields(r) {
   if (r.items !== undefined) f[A.items] = arr(r.items).filter(v => CHOICES.items.includes(v));
   if (r.km !== undefined) { const n = Number(r.km); f[A.km] = r.km === '' || r.km == null || isNaN(n) ? null : n; }
   if (r.vehicles !== undefined) { const n = parseInt(r.vehicles, 10); f[A.vehicles] = r.vehicles === '' || r.vehicles == null || isNaN(n) ? null : n; }
+  if (r.tcCrew !== undefined) {
+    const crew = cleanCrew(r.tcCrew);
+    f[A.tcCrew] = crew.length ? JSON.stringify(crew) : '';
+    // The first person also goes in the old single fields, for anything still reading them.
+    const c0 = crew[0] || {};
+    f[A.tcEmployee] = c0.name || ''; f[A.tcUnit] = c0.unit || '';
+    f[A.tcCalled] = c0.called || null; f[A.tcArrived] = c0.arrived || null; f[A.tcLeft] = c0.left || null;
+  }
+  if (r.tcEquip !== undefined) { const eq = cleanEquip(r.tcEquip); f[A.tcEquip] = eq.length ? JSON.stringify(eq) : ''; }
   return f;
 }
+/* Traffic control called in (Troy, 2026-10-08): "there needs to be a place for more than one person
+   called in for traffic control and for equipment, arrow boards, trucks etc." Rows with no name /
+   no kind are dropped; times must be real times or are left blank. */
+const MAX_TC_ROWS = 20;
+const EQUIP_KINDS = ['Arrow board', 'Message board', 'Truck', 'TMA truck', 'Light tower', 'Trailer', 'Other'];
+const tcTime = v => (v && isoOk(v) ? v : '');
+const tcStr = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+function cleanCrew(list) {
+  return arr(list).filter(x => x && typeof x === 'object').map(x => ({ name: tcStr(x.name, 120), unit: tcStr(x.unit, 30),
+    called: tcTime(x.called), arrived: tcTime(x.arrived), left: tcTime(x.left) })).filter(x => x.name).slice(0, MAX_TC_ROWS);
+}
+function cleanEquip(list) {
+  return arr(list).filter(x => x && typeof x === 'object' && EQUIP_KINDS.includes(x.kind)).map(x => ({ kind: x.kind, unit: tcStr(x.unit, 30),
+    arrived: tcTime(x.arrived), left: tcTime(x.left), notes: tcStr(x.notes, 300) })).slice(0, MAX_TC_ROWS);
+}
+function parseRows(v) { try { const j = JSON.parse(v || '[]'); return Array.isArray(j) ? j : []; } catch (_) { return []; } }
 function shapeAR(rec) {
   if (!rec) return null;
   const f = rec.fields || {}, out = { id: rec.id, reportNo: f[A.reportNo] || '' };
@@ -130,6 +156,10 @@ function shapeAR(rec) {
     officialWeather: f[A.officialWeather] || '', officialWeatherStation: f[A.officialWeatherStation] || '',
     officialWeatherAt: f[A.officialWeatherAt] || '', officialWeatherUrl: f[A.officialWeatherUrl] || '',
     repairsDone: !!f[A.repairsDone], repairDate: f[A.repairDate] || '', repairNotes: f[A.repairNotes] || '' });
+  out.tcCrew = cleanCrew(parseRows(f[A.tcCrew]));
+  // A report saved before the list existed: its one person becomes the first row.
+  if (!out.tcCrew.length && out.tcEmployee) out.tcCrew = cleanCrew([{ name: out.tcEmployee, unit: out.tcUnit, called: out.tcCalled, arrived: out.tcArrived, left: out.tcLeft }]);
+  out.tcEquip = cleanEquip(parseRows(f[A.tcEquip]));
   out.photos = {};
   for (const [kind, key] of Object.entries(PHOTO)) out.photos[kind] = arr(f[A[key]]).map(a => ({ id: a.id, url: a.url, filename: a.filename,
     thumb: a.thumbnails?.large?.url || a.thumbnails?.small?.url || '' }));
@@ -309,6 +339,7 @@ function photosMissing(r, mva) {
    own patrol report for that shift: the one whose shift covers the time of the MVA, else one
    from that day, else the day before (a night shift). Never fatal — the box stays typeable. */
 const P = require('./patrol').__test;
+const BD = require('./breakdowns').__test;   // every active Fleet DB unit, for the TC equipment list
 const PR = { base: process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe', table: process.env.PATROL_TABLE || 'tblosu2dzKTwhuHnf' };
 function dayBefore(d) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); }
 function pickReport(rows, mva) {
@@ -357,9 +388,11 @@ module.exports = async function handler(req, res) {
       if (!mva) return res.status(404).json(M.NOT_FOUND);
       res.setHeader('Cache-Control', 'no-store');
       const found = await findReport(mva);
-      const [fleet, fromReport] = await Promise.all([truckChoices(), truckFromReport(mva)]);
-      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: CHOICES, admin: !!caller.isAdmin, canEdit: M.canEdit(mva),
-        truck: { fleet, fromReport } });
+      const [fleet, fromReport, units, people] = await Promise.all([truckChoices(), truckFromReport(mva), BD.getFleet().catch(() => []),
+        L.getEmployees().catch(() => [])]);
+      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: Object.assign({}, CHOICES, { equipKinds: EQUIP_KINDS }),
+        admin: !!caller.isAdmin, canEdit: M.canEdit(mva), truck: { fleet, fromReport },
+        tc: { people: people.filter(p => p.active).map(p => p.name).sort(), units: units.map(u => ({ unit: u.unit, description: BD.describeUnit(u), depot: u.depot })) } });
     }
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const body = L.parseBody(req);
@@ -445,4 +478,4 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount, pickReport, truckFromReport, truckChoices, dayBefore };
+module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount, pickReport, truckFromReport, truckChoices, dayBefore, cleanCrew, cleanEquip, EQUIP_KINDS };
