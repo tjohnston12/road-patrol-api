@@ -495,7 +495,11 @@ async function getChoices() {
     winterPatrollers: winterPatrollers.map(slim),
     // Every active employee, so "someone else" can still be resolved to an email.
     patrollers: employees.filter(e => e.active).map(slim),
-    vehicles,
+    // Troy, 2026-10-08: "be sure to exclude all retired equipment from all pick lists". The
+    // learned numbers come from past reports, so a unit since retired would linger there: once
+    // the fleet is readable, only numbers that are an ACTIVE fleet unit are suggested. A spare
+    // or rental can still be typed. Fleet unreadable: the learned list as before.
+    vehicles: fleet.length ? vehicles.filter(v => fleet.some(u => normUnit(u.unit) === normUnit(v))) : vehicles,
     fleet,
     ...(fleet.length ? {} : { fleetNote: FLEET_ERROR }),
   };

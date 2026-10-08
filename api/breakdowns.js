@@ -95,6 +95,27 @@ async function getFleet() {
     return out;
   } catch (_) { return FLEET ? FLEET.list : []; }       // never hold a breakdown up for the fleet list
 }
+/* Troy, 2026-10-08: "the breakdown alert is primarily used by patrollers to record when SNIC
+   equipment is down, one tons, and pickups can be included". The unit picker offers those three,
+   SNIC first; any other unit can still be typed, and a typed fleet unit is still recognised.
+   SNIC by Fleet DB series: 21 plow trucks, 30 loaders, 33 snow blowers, 40 tow-behind plows,
+   50 winter attachments (spreaders, wings, plows, brine — not the TMAs). 12 one tons, 10 pickups. */
+const UNIT_GROUPS = [{ key: 'snic', label: 'SNIC equipment' }, { key: 'oneton', label: 'One tons' }, { key: 'pickup', label: 'Pickups' }];
+function unitGroup(u) {
+  const s = String((u && u.series) || ''), d = String((u && u.designation) || '').toLowerCase();
+  if (s === '21' || s === '30') return 'snic';
+  if (s === '33') return /snow ?blow/.test(d) ? 'snic' : '';
+  if (s === '40') return /plow/.test(d) ? 'snic' : '';
+  if (s === '50') return /tma|traffic control/.test(d) ? '' : 'snic';
+  if (s === '12') return 'oneton';
+  if (s === '10') return 'pickup';
+  return '';
+}
+function fleetForPicker(fleet) {
+  const order = k => { const i = UNIT_GROUPS.findIndex(g => g.key === k); return i < 0 ? 99 : i; };
+  return fleet.map(u => ({ unit: u.unit, depot: u.depot, series: u.series, description: describeUnit(u), group: unitGroup(u) }))
+    .sort((a, b) => order(a.group) - order(b.group) || a.unit.localeCompare(b.unit, 'en', { numeric: true }));
+}
 function describeUnit(u) {
   if (!u) return '';
   const mm = [u.make, u.model].filter(Boolean);
@@ -300,7 +321,7 @@ module.exports = async function handler(req, res) {
         const [patrollers, fleet] = await Promise.all([L.getPatrollers().catch(() => []), getFleet()]);
         return res.status(200).json({ kinds: KINDS, situations: SITUATIONS, positions: POSITIONS, routes: ROUTES, directions: DIRECTIONS,
           depots: DEPOTS, plowRoutes: PLOW_ROUTES, locationTypes: LOC_TYPES,
-          fleet: fleet.map(u => ({ unit: u.unit, depot: u.depot, series: u.series, description: describeUnit(u) })),
+          fleet: fleetForPicker(fleet), unitGroups: UNIT_GROUPS,
           patrollers: patrollers.map(p => p.name), me: caller.name, admin: caller.isAdmin });
       }
       return res.status(200).json(await listAll());
@@ -333,5 +354,5 @@ module.exports = async function handler(req, res) {
     return res.status(e.status === 404 ? 404 : 500).json({ error: e.status === 404 ? 'Not found' : (e.message || 'Server error') });
   }
 };
-module.exports.__test = { F, T_BD, PUBLIC, EQUIP, KINDS, SITUATIONS, POSITIONS, ROUTES, DIRECTIONS, DEPOTS, PLOW_ROUTES, TITLES, LISTS, SWITCHES,
+module.exports.__test = { unitGroup, fleetForPicker, UNIT_GROUPS, F, T_BD, PUBLIC, EQUIP, KINDS, SITUATIONS, POSITIONS, ROUTES, DIRECTIONS, DEPOTS, PLOW_ROUTES, TITLES, LISTS, SWITCHES,
   newId, cleanReport, cleanClose, shape, recipients, message, listAll, getFleet, describeUnit, resetFleet: () => { FLEET = null; } };
