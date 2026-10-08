@@ -316,6 +316,41 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   r = await call('POST', { mva: mid, report: { truck: 'Y' } });
   eq('…a supervisor can still correct it', [r.status, r.json.report.truck], [200, 'Y']);
 
+  /* The patrol truck (Troy, 2026-10-08): the fleet list, and the truck from the patroller's own
+     patrol report for that shift */
+  const AL = require(path.join(__dirname, '..', 'api', 'accident.js')).lib;
+  const mvaAt = { patroller: 'Tom Gibson', date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z' };
+  const rows = [
+    { reportId: 'RP-A', date: '2026-10-06', vehicle: '2210-44', start: '2026-10-06T10:00:00.000Z', end: '2026-10-06T22:00:00.000Z' },
+    { reportId: 'RP-B', date: '2026-10-06', vehicle: '1910-01', start: '2026-10-06T22:30:00.000Z', end: '' },
+    { reportId: 'RP-C', date: '2026-10-05', vehicle: '710-07', start: '2026-10-05T22:00:00.000Z', end: '2026-10-06T10:00:00.000Z' },
+  ];
+  eq('the report whose shift covers the MVA wins', AL.pickReport(rows, mvaAt).reportId, 'RP-A');
+  eq('an MVA in a night shift that started the day before', AL.pickReport(rows, { ...mvaAt, occurredAt: '2026-10-06T05:00:00.000Z' }).reportId, 'RP-C');
+  eq('an in-progress report (no end yet) covers a later MVA', AL.pickReport(rows, { ...mvaAt, occurredAt: '2026-10-07T01:00:00.000Z' }).reportId, 'RP-B');
+  eq('no shift covers it: a report from that day', AL.pickReport(rows.slice(0, 2), { ...mvaAt, occurredAt: '2026-10-06T08:00:00.000Z' }).reportId, 'RP-B');
+  eq('nothing that day covers it: the day before (a night shift with no end time)', AL.pickReport([rows[2]].map(r => ({ ...r, end: '2026-10-06T04:00:00.000Z' })), mvaAt).reportId, 'RP-C');
+  eq('a report with no truck is skipped', AL.pickReport([{ ...rows[0], vehicle: '' }], mvaAt), null);
+  eq('nothing that day or the day before: none', AL.pickReport([{ ...rows[0], date: '2026-10-01', start: '2026-10-01T10:00:00.000Z', end: '2026-10-01T22:00:00.000Z' }], mvaAt), null);
+  DB.tblosu2dzKTwhuHnf = {
+    recPR1: { id: 'recPR1', fields: { fldZ4JDUx4Tqc3eQ2: 'RP-20261006-0700-AAAA', fldjJZKRSkgEvcR1O: '2026-10-06', fld2yQSx8QJ3Netq3: 'Tom Gibson', fldRAvwQ4q1rQQnRy: '2210-44',
+      fldQvA6fxrGMzQX3F: '2026-10-06T10:00:00.000Z', fld3evTcidYDyquje: '' } },
+    recPR2: { id: 'recPR2', fields: { fldZ4JDUx4Tqc3eQ2: 'RP-20261006-0700-BBBB', fldjJZKRSkgEvcR1O: '2026-10-06', fld2yQSx8QJ3Netq3: 'James Rodey', fldRAvwQ4q1rQQnRy: '9910-99',
+      fldQvA6fxrGMzQX3F: '2026-10-06T11:00:00.000Z', fld3evTcidYDyquje: '' } },
+  };
+  DB.tblNiXX7E11K4Gfzy = {
+    recF1: { id: 'recF1', fields: { fldVL7P5cZaQO0lLM: '2210-44', fldY6lnC7p63eInFV: 'Active', fldFia5obvtL7hNha: '10', fldZL42bqcSC2Rrfx: 'Chevy', fld9h45yBxzvONcW9: 'Silverado', fldTGKBaLbEt97Ih6: 'West Patroller', fld5A4dbfBx90FUGw: 'Oromocto' } },
+    recF2: { id: 'recF2', fields: { fldVL7P5cZaQO0lLM: '1621-50', fldY6lnC7p63eInFV: 'Active', fldFia5obvtL7hNha: '50', fldZL42bqcSC2Rrfx: 'International', fldTGKBaLbEt97Ih6: 'D13 U-Body', fld5A4dbfBx90FUGw: 'River Glade' } },
+  };
+  const tm = seedMva({ fld8dDEK0xlJqPUzS: '2026-10-06', fldyNaXuFj9LTbelQ: '2026-10-06T16:56:00.000Z', flddJ5v5jZ9rv4VWg: '2026-10-06-310.000-WB' });
+  r = await call('GET', null, { mva: tm });
+  eq('GET: the truck from Tom\'s own patrol report, not James\'s', r.json.truck && r.json.truck.fromReport, { vehicle: '2210-44', reportId: 'RP-20261006-0700-AAAA', shiftDate: '2026-10-06' });
+  eq('GET: the fleet list is the pickups only, patrol trucks marked', r.json.truck && r.json.truck.fleet.map(u => [u.unit, u.patrol]), [['2210-44', true]]);
+  eq('the accident report offers all four routes', r.json.choices.routes, ['Route 1', 'Route 2', 'Route 7', 'Route 8', 'Other']);
+  delete DB.tblosu2dzKTwhuHnf;
+  r = await call('GET', null, { mva: tm });
+  eq('patrol reports unreadable: the page still opens, no truck', [r.status, r.json.truck.fromReport], [200, null]);
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-accident: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
