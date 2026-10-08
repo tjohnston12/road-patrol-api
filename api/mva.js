@@ -23,7 +23,7 @@
 //      app still works — the notification is recorded and simply not emailed.
 
 const L = require('./_lib');
-const { requireCaller } = require('./_auth');
+const { requireCaller, getCaller } = require('./_auth');
 const C = require('./_conditions');   // the Patrol Notifications switch (Off / Owner test / Everyone)
 
 const BASE  = process.env.MVA_BASE  || 'appMKaiabPAPx3JaV';
@@ -497,6 +497,23 @@ async function loadOwned(id, caller, ctx) {
 const canEdit = row => !!(row && row.access && row.access.edit);
 const NOT_FOUND = { error: 'MVA not found' };
 
+// The last `days` days of MVA notifications (max 60), newest first, picker fields only.
+async function recentMvas(days) {
+  const d = Math.min(Math.max(Math.round(days) || 14, 1), 60);
+  const qs = new URLSearchParams();
+  qs.set('pageSize', '100');
+  qs.set('returnFieldsByFieldId', 'true');
+  qs.set('sort[0][field]', F.date);
+  qs.set('sort[0][direction]', 'desc');
+  qs.set('filterByFormula', `IS_AFTER({${F.date}}, DATEADD(TODAY(), -${d + 1}, 'days'))`);
+  const j = await airtable(`${BASE}/${encodeURIComponent(TABLE)}?${qs}`);
+  const since = new Date(Date.now() - (d + 1) * 864e5).toISOString().slice(0, 10);
+  return (j.records || []).map(shape)
+    .filter(r => r.mvaNo && String(r.date).slice(0, 10) >= since)   // re-checked: the formula is not trusted alone
+    .map(r => ({ mvaNo: r.mvaNo, date: r.date, occurredAt: r.occurredAt, division: r.division,
+                 route: r.route, km: r.km, direction: r.direction, ramp: r.ramp }));
+}
+
 async function fetchRows({ mine, who }) {
   const rows = [];
   let offset;
@@ -524,6 +541,21 @@ async function fetchRows({ mine, who }) {
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
   if (!L.PAT) return res.status(500).json({ error: 'Server not configured (AIRTABLE_PAT missing)' });
+
+  /* Recent MVAs for the Timesheets MVA picker (2026-10-08). The people called in
+     for traffic control are operators without the Patrol app, so this one read
+     takes any signed-in employee — and answers only the number and where/when,
+     nothing about the people, vehicles or damage. */
+  if (req.method === 'GET' && String(req.query?.view || '') === 'recent') {
+    const who = await getCaller(req);
+    if (!who) return res.status(401).json({ error: 'Not signed in' });
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ rows: await recentMvas(Number(req.query?.days) || 14) });
+    } catch (e) {
+      return res.status(500).json({ error: 'Could not load the MVAs.' });
+    }
+  }
 
   // ⚠️ Identity BEFORE the try — see the note in patrol.js.
   const caller = await requireCaller(req, res);
@@ -864,4 +896,4 @@ async function step(row, body, caller, ctx, res) {
 
 // Shared with api/accident.js (the Accident Report + Proof of Repairs, 2026-10-06):
 // the same ownership rule and the same folder rows.
-module.exports.lib = { BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
+module.exports.lib = { recentMvas, BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
