@@ -97,6 +97,15 @@ const FLEET = [{ unit: '2210-44', recId: 'recF1' }];
     && /truck's road/.test(err({ ...GOOD, ptRoad: 'x' })) && /station's road/.test(err({ ...GOOD, rwisRoad: '' })));
   ok('an impossible temperature is refused', /truck's road/.test(err({ ...GOOD, ptRoad: '150' })));
   ok('a time in the future is refused', /future/.test(err({ ...GOOD, checkedAt: new Date(NOW.getTime() + 3600000).toISOString() })));
+  // station offline (Troy: "if the rwis station is off line or not showing temps, how do the patrollers enter an n/a")
+  c = X.cleanCheck({ ...GOOD, rwisRoad: '', rwisRoadNA: true }, caller, FLEET, NOW);
+  ok('station road "no reading": accepted without a value', !c.error, c.error);
+  eq('…station value and diff left blank, the air still compared', [c.fields[F.rwisRoad], c.fields[F.roadDiff], c.fields[F.airDiff]], [null, null, 0.8]);
+  eq('…recorded as no reading, and flagged so the station gets looked at', [c.fields[F.noReading], c.fields[F.flagged]], [['Road'], 'Yes']);
+  ok('…the truck readings are still required', /truck's road/.test(err({ ...GOOD, ptRoad: '', rwisRoadNA: true })));
+  ok('no station value and no "no reading": refused, and it says how', /or tick "No reading"/.test(err({ ...GOOD, rwisAir: '' })));
+  eq('both offline: both listed', X.cleanCheck({ ...GOOD, rwisAir: '', rwisAirNA: true, rwisRoad: '', rwisRoadNA: true }, caller, FLEET, NOW).fields[F.noReading], ['Air', 'Road']);
+  eq('"no reading" must be a real true, not a string', !!err({ ...GOOD, rwisAir: '', rwisAirNA: 'yes' }), true);
   eq('seven stations, west to east', X.STATIONS.map(s => s.station), ['Longs Creek', 'Saint John River Bridge', 'Mill Cove', 'Fire Road', 'Dubee Settlement', 'Salisbury', 'Magnetic Hill']);
 
   /* 2 — who gets the email */
@@ -122,6 +131,11 @@ const FLEET = [{ unit: '2210-44', recId: 'recF1' }];
   ok('…the subject names the station and both gaps', MAIL[0] && /^RWIS station off — Salisbury \(air \+0\.8 °C, road \+3\.6 °C\)$/.test(MAIL[0].subject), MAIL[0] && MAIL[0].subject);
   ok('…the email says what to do and carries the comment', /check the station before relying/.test(MAIL[0].html) && /sensor iced\?/.test(MAIL[0].html));
   ok('…recorded on the check', /^Flagged .*: (derek@x\.ca, ops@x\.ca|ops@x\.ca, derek@x\.ca)$/.test(DB.rw[1].fields[F.emailedTo]), DB.rw[1].fields[F.emailedTo]);
+  MAIL = [];
+  r = await call('POST', {}, { ...GOOD, station: 'Mill Cove', rwisAir: '', rwisAirNA: true, rwisRoad: '', rwisRoadNA: true });
+  ok('an offline station: saved, flagged, emailed as NOT REPORTING', r.code === 201 && r.body.check.flagged && MAIL[0] && /^RWIS station not reporting — Mill Cove \(air no reading, road no reading\)$/.test(MAIL[0].subject), MAIL[0] && MAIL[0].subject);
+  ok('…the email says to check the station', /offline or not showing air and road temperature/.test(MAIL[0].html));
+  DB.rw.pop();
   r = await call('GET', {});
   eq('the board: each station\'s latest check', r.body.stations.filter(s => s.last).map(s => [s.station, s.last.flagged]), [['Dubee Settlement', false], ['Salisbury', true]]);
   eq('…recent, newest first', r.body.recent.length, 2);
