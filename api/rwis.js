@@ -21,12 +21,22 @@
 // station value and its diff are left blank, `No Station Reading` says which, and the check is
 // Flagged: a station that is not reporting needs looking at as much as one that is wrong.
 //
-// Base MRDC-HTRA - Road Patrol (app2m7rkP51kLLpbe), table RWIS Checks.
+// Repair tickets (Troy, same day: "if it is entered as offline or no reading create an email
+// notification or a ticket that gets sent myself, and a contractor to be named later for repair"):
+// a check with a "no reading" opens a ticket in RWIS Repairs for that station and emails the
+// "RWIS Repairs" list (Troy, and the contractor once named — added through Distribution Lists;
+// until anyone subscribes, the Owner) on the "RWIS repair email" switch. ONE open ticket per
+// station: a later offline check is added to the open ticket, not a second one, and does not email
+// again. Marking it repaired closes it and emails the same list. A gap of 2 °C does not open a
+// ticket — only a station that is not reporting.
+//
+// Base MRDC-HTRA - Road Patrol (app2m7rkP51kLLpbe), tables RWIS Checks and RWIS Repairs.
 //
 // GET  /api/rwis?meta=1  -> { stations, threshold, trucks, patrollers, me }
 // GET  /api/rwis         -> { stations: [{ station, where, last }], recent }   recent = last 30 days, newest first
-// POST /api/rwis {station, truck, ptAir, rwisAir, ptRoad, rwisRoad, comments?, checkedBy?, checkedAt?}
-//                        -> { check, email }
+// POST /api/rwis {station, truck, ptAir, rwisAir, ptRoad, rwisRoad, rwisAirNA?, rwisRoadNA?, comments?, checkedBy?, checkedAt?}
+//                        -> { check, email, ticket?, ticketNew?, ticketEmail? }
+// POST /api/rwis?id=rec…&action=repaired {by?, at?, notes, contractor?}  -> { ticket, email }
 
 const L = require('./_lib');
 const C = require('./_conditions');
@@ -52,6 +62,13 @@ const STATIONS = [
   { station: 'Magnetic Hill', where: 'Exit 450' },
 ];
 const NAMES = STATIONS.map(s => s.station);
+const T_REP = 'tbl1s5XA4LqAMHY3H';
+const R = { id: 'fldN02hbVTuy9beFF', station: 'fldsLKcLxwS0SgJyY', status: 'fld8TVs4LJtQQvabC', problem: 'fldMAZLozMwtKXdID',
+  openedAt: 'fldvCIpWWnaMUGxUQ', reportedBy: 'fldFCpfqTHkblpCho', checks: 'fldqUyCgu0T5rNaxb', contractor: 'fldE3nZvbQ26Q601q',
+  repairedAt: 'fldWa8giOXyr34kMP', repairedBy: 'fldRvIr2FSFIoK8RX', notes: 'fldFy1aNfGYO7BMK8', emailedTo: 'fldk6S5awR32u9fYP', emailedAt: 'fldlT6I5dFC6iic7x' };
+const REPAIR_LIST = 'RWIS Repairs';
+const REPAIR_SWITCH = 'RWIS repair email';
+const PROBLEM = { Air: 'No air reading', Road: 'No road reading' };
 const THRESHOLD = 2;                       // °C, either reading (Troy, 2026-10-13)
 const LIST = 'RWIS Checks';
 const SWITCH = 'RWIS check email';
@@ -170,6 +187,102 @@ async function email(a) {
   await C.stampSwitch(sw, `${new Date().toISOString().slice(0, 16)} ${a.checkId}: ${record}`);
   return { check: shape(upd), email: { mode: sw.mode, sent: sent.length, wouldReach: real.length, note: record } };
 }
+/* ── repair tickets ── */
+function shapeRepair(r) {
+  const f = r.fields || {};
+  return { id: r.id, ticketId: f[R.id] || '', station: L.sel(f[R.station]) || '', status: L.sel(f[R.status]) || 'Open',
+    problem: L.arr(f[R.problem]).map(L.sel), openedAt: f[R.openedAt] || '', reportedBy: f[R.reportedBy] || '',
+    checks: f[R.checks] || '', contractor: f[R.contractor] || '', repairedAt: f[R.repairedAt] || '', repairedBy: f[R.repairedBy] || '',
+    notes: f[R.notes] || '', emailedTo: f[R.emailedTo] || '' };
+}
+function repairRecipients(dir) {
+  const subs = C.subscribed(dir, REPAIR_LIST);
+  return [...new Set((subs.length ? subs : C.owners(dir)).map(e => e.toLowerCase()))];
+}
+async function listRepairs(now = new Date()) {
+  const since = new Date(now.getTime() - RECENT_DAYS * 24 * 3600000).toISOString();
+  const out = []; let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('returnFieldsByFieldId', 'true'); qs.set('pageSize', '100');
+    qs.set('filterByFormula', `OR({Status}='Open', IS_AFTER({Repaired At}, '${since}'))`);
+    if (offset) qs.set('offset', offset);
+    const page = await L.airtable(`${C.BASE}/${T_REP}?${qs}`);
+    out.push(...(page.records || []).map(shapeRepair));
+    offset = page.offset;
+  } while (offset && out.length < 500);
+  return { open: out.filter(t => t.status === 'Open').sort((a, b) => a.openedAt.localeCompare(b.openedAt)),
+           repaired: out.filter(t => t.status !== 'Open' && t.repairedAt >= since).sort((a, b) => b.repairedAt.localeCompare(a.repairedAt)) };
+}
+function checkLine(c) {
+  return `${c.checkId} · ${dt(c.checkedAt)} · ${c.checkedBy} (truck ${c.truck}) · ${(c.noReading || []).map(k => PROBLEM[k]).join(', ')}${c.comments ? ` — ${c.comments}` : ''}`;
+}
+function repairMessage(t, event, real, preview) {
+  const esc = L.esc, done = event === 'repaired';
+  const st = STATIONS.find(s => s.station === t.station) || {};
+  const subject = `${preview ? '[TEST] ' : ''}${done ? 'RWIS station repaired' : 'RWIS repair needed'} — ${t.station}${done ? '' : ` (${t.problem.join(', ').toLowerCase()})`}`;
+  const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#15243B">
+    ${preview ? `<p style="background:#FDF0DD;padding:8px 10px;border-radius:6px"><b>Owner test.</b> With the switch on Everyone this would go to ${real.length}: ${esc(real.join(', ') || 'nobody — no address found')}.</p>` : ''}
+    <h2 style="margin:0 0 6px;color:${done ? '#1D7A46' : '#A32D2D'}">${done ? 'RWIS STATION REPAIRED' : 'RWIS REPAIR NEEDED'} — ${esc(t.station)}</h2>
+    <p style="margin:0 0 8px">${esc(st.where || '')}. Ticket ${esc(t.ticketId)}.</p>
+    ${done ? `<p style="margin:0 0 6px"><b>Repaired ${esc(dt(t.repairedAt))} by ${esc(t.repairedBy)}</b>${t.contractor ? ` (${esc(t.contractor)})` : ''} — ${esc(t.notes)}</p>`
+           : `<p style="margin:0 0 6px"><b>Problem:</b> ${esc(t.problem.join(', '))} — the station was offline or not showing the temperature when a patroller checked it.</p>`}
+    <p style="margin:8px 0 4px"><b>Checks:</b></p><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;margin:0">${esc(t.checks)}</pre>
+    <p style="margin-top:14px"><a href="https://www.mrdc-htra.com/patrol/rwis.html">Open RWIS checks and repairs</a></p>
+    <p style="font-size:12px;color:#777">From the MRDC Road Patrol app · ${esc(t.ticketId)}</p></div>`;
+  return { subject, html };
+}
+async function emailRepair(t, event) {
+  const sw = await C.switchFor(REPAIR_SWITCH);
+  const dir = await C.directory();
+  const real = repairRecipients(dir);
+  const { to, preview } = C.deliveryFor(sw.mode, real, dir);
+  const { subject, html } = repairMessage(t, event, real, preview);
+  let sent = [], reason = '';
+  if (to.length) ({ sent, reason } = await L.sendMailDetailed({ to, subject, html }));
+  else reason = sw.mode === 'Off' ? 'the RWIS repair email switch is Off' : 'no recipient address found';
+  const record = sent.length ? (preview ? `Owner test: ${sent.join(', ')} (would go to ${real.length})` : sent.join(', ')) : `not sent — ${reason}`;
+  const line = `${event === 'repaired' ? 'Repaired' : 'Opened'} ${new Date().toISOString().slice(0, 16)}: ${record}`;
+  const upd = await L.airtable(`${C.BASE}/${T_REP}/${t.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true,
+    fields: { [R.emailedTo]: (t.emailedTo ? t.emailedTo + '\n' : '') + line, [R.emailedAt]: new Date().toISOString() } }) });
+  await C.stampSwitch(sw, `${new Date().toISOString().slice(0, 16)} ${t.ticketId} ${event}: ${record}`);
+  return { ticket: shapeRepair(upd), email: { mode: sw.mode, sent: sent.length, wouldReach: real.length, note: record } };
+}
+/* A check with a "no reading" → the station's open ticket (added to), or a new one (emailed). */
+async function ticketFor(check) {
+  if (!(check.noReading || []).length) return null;
+  const { open } = await listRepairs();
+  const hit = open.find(t => t.station === check.station);
+  const probs = check.noReading.map(k => PROBLEM[k]);
+  if (hit) {
+    const upd = await L.airtable(`${C.BASE}/${T_REP}/${hit.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true,
+      fields: { [R.checks]: (hit.checks ? hit.checks + '\n' : '') + checkLine(check), [R.problem]: [...new Set([...hit.problem, ...probs])] } }) });
+    return { ticket: shapeRepair(upd), ticketNew: false };
+  }
+  const p = C.parts(new Date(check.checkedAt)), r = Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, '0');
+  const fields = { [R.id]: `RR-${p.date.replace(/-/g, '')}-${String(p.hour).padStart(2, '0')}${String(p.minute).padStart(2, '0')}-${r}`,
+    [R.station]: check.station, [R.status]: 'Open', [R.problem]: probs, [R.openedAt]: check.checkedAt,
+    [R.reportedBy]: check.checkedBy, [R.checks]: checkLine(check) };
+  const t = shapeRepair(await L.airtable(`${C.BASE}/${T_REP}`, { method: 'POST', body: JSON.stringify({ returnFieldsByFieldId: true, fields }) }));
+  try { const m = await emailRepair(t, 'opened'); return { ticket: m.ticket, ticketNew: true, ticketEmail: m.email }; }
+  catch (e) { return { ticket: t, ticketNew: true, ticketEmailError: 'Ticket opened, but its email did not go: ' + e.message }; }
+}
+function cleanRepaired(b, t, caller, now = new Date()) {
+  b = b || {};
+  // A repair is often logged days later, so no one-day limit here — only not before the ticket, not in the future.
+  const at = b.at ? { at: new Date(b.at) } : { at: now };
+  if (isNaN(at.at.getTime())) return { error: 'The time is not a time.' };
+  if (at.at.getTime() > now.getTime() + 5 * 60000) return { error: 'The time is in the future.' };
+  if (t.openedAt && at.at.getTime() < new Date(t.openedAt).getTime()) return { error: 'That is before the ticket was opened.' };
+  const by = String(b.by || caller.name || '').trim().slice(0, 120);
+  if (by.length < 2) return { error: 'Who confirmed the repair?' };
+  const notes = String(b.notes || '').trim();
+  if (notes.length < 3) return { error: 'Say what was repaired.' };
+  if (notes.length > 2000) return { error: 'Keep the notes under 2000 characters.' };
+  const contractor = String(b.contractor == null ? t.contractor : b.contractor).trim().slice(0, 120);
+  return { fields: { [R.status]: 'Repaired', [R.repairedAt]: at.at.toISOString(), [R.repairedBy]: by, [R.notes]: notes, [R.contractor]: contractor } };
+}
+
 async function listRecent(now = new Date()) {
   const out = []; let offset;
   const since = new Date(now.getTime() - RECENT_DAYS * 24 * 3600000).toISOString();
@@ -186,7 +299,10 @@ async function listRecent(now = new Date()) {
   const recent = out.filter(a => a.checkedAt >= since).sort((a, b) => b.checkedAt.localeCompare(a.checkedAt));
   // Each station's latest check in the window — the "stations to check" board.
   const stations = STATIONS.map(s => ({ ...s, last: recent.find(a => a.station === s.station) || null }));
-  return { stations, recent, threshold: THRESHOLD };
+  let repairs = { open: [], repaired: [] };
+  try { repairs = await listRepairs(now); } catch (_) { /* the board still loads */ }
+  for (const s of stations) s.ticket = repairs.open.find(t => t.station === s.station) || null;
+  return { stations, recent, threshold: THRESHOLD, repairs };
 }
 
 module.exports = async function handler(req, res) {
@@ -206,13 +322,28 @@ module.exports = async function handler(req, res) {
     }
     if (req.method === 'POST') {
       const body = L.parseBody(req);
+      if (Q.id) {
+        if (!/^rec[A-Za-z0-9]{14}$/.test(String(Q.id))) return res.status(400).json({ error: 'Bad id' });
+        if (Q.action !== 'repaired') return res.status(400).json({ error: 'Unknown action' });
+        const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true');
+        const t = shapeRepair(await L.airtable(`${C.BASE}/${T_REP}/${Q.id}?${qs}`));
+        if (t.status !== 'Open') return res.status(409).json({ error: `Already repaired — ${dt(t.repairedAt)} by ${t.repairedBy}.`, ticket: t });
+        const c = cleanRepaired(body, t, caller);
+        if (c.error) return res.status(400).json({ error: c.error });
+        const upd = shapeRepair(await L.airtable(`${C.BASE}/${T_REP}/${t.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields: c.fields }) }));
+        try { return res.status(200).json(await emailRepair(upd, 'repaired')); }
+        catch (e) { return res.status(200).json({ ticket: upd, emailError: 'Saved, but the email did not go: ' + e.message }); }
+      }
       const fleet = await P.getFleet().catch(() => []);
       const c = cleanCheck(body, caller, fleet);
       if (c.error) return res.status(400).json({ error: c.error });
       const created = shape(await L.airtable(`${C.BASE}/${T_RWIS}`, { method: 'POST', body: JSON.stringify({ returnFieldsByFieldId: true, fields: c.fields }) }));
-      if (!created.flagged) return res.status(201).json({ check: created, email: null });
-      try { return res.status(201).json(await email(created)); }
-      catch (e) { return res.status(201).json({ check: created, emailError: 'Saved, but the email did not go: ' + e.message }); }
+      // The repair ticket first (offline only); a failure there never loses the check.
+      let tk = null;
+      try { tk = await ticketFor(created); } catch (e) { tk = { ticketError: 'The check is saved, but the repair ticket could not be opened: ' + e.message }; }
+      if (!created.flagged) return res.status(201).json({ check: created, email: null, ...(tk || {}) });
+      try { return res.status(201).json({ ...(await email(created)), ...(tk || {}) }); }
+      catch (e) { return res.status(201).json({ check: created, emailError: 'Saved, but the email did not go: ' + e.message, ...(tk || {}) }); }
     }
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (e) {
@@ -220,4 +351,4 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.__test = { F, T_RWIS, STATIONS, THRESHOLD, LIST, SWITCH, TITLES, cleanCheck, shape, recipients, message, listRecent, diff, flags, newId };
+module.exports.__test = { R, T_REP, REPAIR_LIST, REPAIR_SWITCH, shapeRepair, repairRecipients, repairMessage, ticketFor, cleanRepaired, listRepairs, F, T_RWIS, STATIONS, THRESHOLD, LIST, SWITCH, TITLES, cleanCheck, shape, recipients, message, listRecent, diff, flags, newId };
