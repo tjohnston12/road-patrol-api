@@ -17,9 +17,13 @@
 // Supervisor / Operators and patrollers by job title — through the "Adverse
 // conditions alert" switch in Patrol Notifications (Off / Owner test / Everyone).
 // One alert per observation; a second press says when it already went.
+//
+// ?kind=snic — Winter Operations (SNIC events), patrol/snic.html. The rules live in ./_snic.js;
+// served from this file so the project stays at 11 serverless functions (Hobby allows 12).
 
 const L = require('./_lib');
 const C = require('./_conditions');
+const SNIC = require('./_snic');
 const { requireCaller } = require('./_auth');
 
 const BOARD_HOURS = 24;
@@ -59,6 +63,8 @@ module.exports = async function handler(req, res) {
   if (!caller) return;
   const Q = req.query || {};
   try {
+    if (Q.kind === 'snic') return await SNIC.handle(req, res, caller);
+    if (Q.kind) return res.status(400).json({ error: 'Unknown kind' });
     if (req.method === 'GET') {
       if (Q.meta) {
         const patrollers = await L.getPatrollers().catch(() => []);
