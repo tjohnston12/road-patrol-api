@@ -15,6 +15,12 @@
 //     a normal check is only recorded.
 // The record is always saved first; an email that fails never loses it.
 //
+// Station offline (Troy, same day: "if the rwis station is off line or not showing temps, how do
+// the patrollers enter an n/a"): each STATION reading can be marked "no reading" (rwisAirNA /
+// rwisRoadNA). The truck's readings are still required — they are the evidence for the day. The
+// station value and its diff are left blank, `No Station Reading` says which, and the check is
+// Flagged: a station that is not reporting needs looking at as much as one that is wrong.
+//
 // Base MRDC-HTRA - Road Patrol (app2m7rkP51kLLpbe), table RWIS Checks.
 //
 // GET  /api/rwis?meta=1  -> { stations, threshold, trucks, patrollers, me }
@@ -33,7 +39,7 @@ const F = {
   fleet: 'fldrGc8DTEbEXlIBn', ptAir: 'fldHRpGO7PaEzRM8W', rwisAir: 'fld9IqbKs7Upj4i4Z', airDiff: 'fldjz6XaR5krchJ4p',
   ptRoad: 'fldcQy5fD25ABrWRV', rwisRoad: 'fldeeYUCQnPbnpMet', roadDiff: 'fldIrR6JGviiko58u', flagged: 'fld009Dp4eqO265Us',
   comments: 'fld7uv94p8rHKqXMp', checkedBy: 'fldsuhcrPZ74ZOxTZ', enteredBy: 'fldWVbbSfeVTzvw0J',
-  emailedTo: 'flddn2pc3E28396xj', emailedAt: 'fldcu4B6pomhUZsUh',
+  emailedTo: 'flddn2pc3E28396xj', emailedAt: 'fldcu4B6pomhUZsUh', noReading: 'fldZNNCoVcWy6zj5T',
 };
 // The seven MRDC-owned stations, west to east (Winter Operations Management Plan §7).
 const STATIONS = [
@@ -81,23 +87,26 @@ function cleanCheck(b, caller, fleet, now = new Date()) {
   const truck = String(b.truck || '').trim();
   if (truck.length < 2 || truck.length > 30) return { error: 'Which patrol truck? (its unit number)' };
   const ptAir = temp(b.ptAir), rwisAir = temp(b.rwisAir), ptRoad = temp(b.ptRoad), rwisRoad = temp(b.rwisRoad);
+  const airNA = b.rwisAirNA === true, roadNA = b.rwisRoadNA === true;
   if (isNaN(ptAir)) return { error: 'Give the truck\'s air temperature (°C, e.g. -4.5).' };
-  if (isNaN(rwisAir)) return { error: 'Give the station\'s air temperature (°C).' };
+  if (!airNA && isNaN(rwisAir)) return { error: 'Give the station\'s air temperature (°C), or tick "No reading".' };
   if (isNaN(ptRoad)) return { error: 'Give the truck\'s road temperature (°C).' };
-  if (isNaN(rwisRoad)) return { error: 'Give the station\'s road temperature (°C).' };
+  if (!roadNA && isNaN(rwisRoad)) return { error: 'Give the station\'s road temperature (°C), or tick "No reading".' };
   const comments = String(b.comments || '').trim();
   if (comments.length > 2000) return { error: 'Keep the comments under 2000 characters.' };
   const checkedBy = String(b.checkedBy || caller.name || '').trim().slice(0, 120);
   if (checkedBy.length < 2) return { error: 'Who did the check?' };
   const t = when(b.checkedAt, now); if (t.error) return { error: t.error };
-  const airDiff = diff(rwisAir, ptAir), roadDiff = diff(rwisRoad, ptRoad);
+  const airDiff = airNA ? null : diff(rwisAir, ptAir), roadDiff = roadNA ? null : diff(rwisRoad, ptRoad);
+  const off = airNA || roadNA || (airDiff != null && flags(airDiff, 0)) || (roadDiff != null && flags(0, roadDiff));
   const hit = (fleet || []).find(u => normUnit(u.unit) === normUnit(truck));
   return { fields: {
     [F.id]: newId(t.at), [F.station]: station, [F.checkedAt]: t.at.toISOString(),
     [F.truck]: hit ? hit.unit : truck, [F.fleet]: hit ? hit.recId : '',
-    [F.ptAir]: ptAir, [F.rwisAir]: rwisAir, [F.airDiff]: airDiff,
-    [F.ptRoad]: ptRoad, [F.rwisRoad]: rwisRoad, [F.roadDiff]: roadDiff,
-    [F.flagged]: flags(airDiff, roadDiff) ? 'Yes' : 'No',
+    [F.ptAir]: ptAir, [F.rwisAir]: airNA ? null : rwisAir, [F.airDiff]: airDiff,
+    [F.ptRoad]: ptRoad, [F.rwisRoad]: roadNA ? null : rwisRoad, [F.roadDiff]: roadDiff,
+    [F.noReading]: [airNA && 'Air', roadNA && 'Road'].filter(Boolean),
+    [F.flagged]: off ? 'Yes' : 'No',
     [F.comments]: comments, [F.checkedBy]: checkedBy, [F.enteredBy]: caller.name || '',
   } };
 }
@@ -110,6 +119,7 @@ function shape(r) {
     ptAir: n(f[F.ptAir]), rwisAir: n(f[F.rwisAir]), airDiff: n(f[F.airDiff]),
     ptRoad: n(f[F.ptRoad]), rwisRoad: n(f[F.rwisRoad]), roadDiff: n(f[F.roadDiff]),
     flagged: L.sel(f[F.flagged]) === 'Yes', comments: f[F.comments] || '',
+    noReading: L.arr(f[F.noReading]).map(L.sel),
     checkedBy: f[F.checkedBy] || '', enteredBy: f[F.enteredBy] || '',
     emailedTo: f[F.emailedTo] || '', emailedAt: f[F.emailedAt] || '',
   };
@@ -120,18 +130,23 @@ function recipients(dir) {
   return [...new Set(dir.people.filter(p => p.active && p.titles.some(t => TITLES.includes(t)) && okEmail(p.email))
     .map(p => p.email.toLowerCase()))];
 }
-const sgn = v => (v > 0 ? '+' : '') + Number(v).toFixed(1);
+const sgn = v => v == null ? 'n/a' : (v > 0 ? '+' : '') + Number(v).toFixed(1);
+const gapText = (a, k) => (a.noReading || []).includes(k) ? 'no reading' : sgn(k === 'Air' ? a.airDiff : a.roadDiff) + ' °C';
 function dt(iso) { const p = C.parts(new Date(iso)); return `${p.date} ${C.hhmm(iso)}`; }
 function message(a, real, preview) {
   const esc = L.esc;
   const st = STATIONS.find(s => s.station === a.station) || {};
-  const subject = `${preview ? '[TEST] ' : ''}RWIS station off — ${a.station} (air ${sgn(a.airDiff)} °C, road ${sgn(a.roadDiff)} °C)`;
+  const nr = a.noReading || [];
+  const subject = `${preview ? '[TEST] ' : ''}${nr.length ? 'RWIS station not reporting' : 'RWIS station off'} — ${a.station} (air ${gapText(a, 'Air')}, road ${gapText(a, 'Road')})`;
   const row = (label, pt, rw, d) => `<tr><td style="padding:3px 12px 3px 0;color:#555">${label}</td><td style="padding:3px 12px 3px 0">${esc(pt.toFixed(1))} °C</td>
-    <td style="padding:3px 12px 3px 0">${esc(rw.toFixed(1))} °C</td><td style="padding:3px 0;${Math.abs(d) >= THRESHOLD ? 'color:#A32D2D;font-weight:700' : ''}">${esc(sgn(d))} °C</td></tr>`;
+    <td style="padding:3px 12px 3px 0">${rw == null ? '<b style="color:#A32D2D">no reading</b>' : esc(rw.toFixed(1)) + ' °C'}</td>
+    <td style="padding:3px 0;${d == null || Math.abs(d) >= THRESHOLD ? 'color:#A32D2D;font-weight:700' : ''}">${d == null ? '—' : esc(sgn(d)) + ' °C'}</td></tr>`;
   const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#15243B">
     ${preview ? `<p style="background:#FDF0DD;padding:8px 10px;border-radius:6px"><b>Owner test.</b> With the switch on Everyone this would go to ${real.length} people: ${esc(real.join(', ') || 'nobody — no address found')}.</p>` : ''}
-    <h2 style="margin:0 0 6px;color:#A32D2D">RWIS STATION READING OFF — ${esc(a.station)}</h2>
-    <p style="margin:0 0 8px">${esc(st.where || '')}. The station differs from the patrol truck by ${THRESHOLD} °C or more — check the station before relying on its readings.</p>
+    <h2 style="margin:0 0 6px;color:#A32D2D">${nr.length ? 'RWIS STATION NOT REPORTING' : 'RWIS STATION READING OFF'} — ${esc(a.station)}</h2>
+    <p style="margin:0 0 8px">${esc(st.where || '')}. ${nr.length
+      ? `The station was offline or not showing ${esc(nr.join(' and ').toLowerCase())} temperature — check the station.`
+      : `The station differs from the patrol truck by ${THRESHOLD} °C or more — check the station before relying on its readings.`}</p>
     <table style="border-collapse:collapse;font-size:15px"><tr><td></td><td style="color:#555;padding-right:12px">Truck ${esc(a.truck)}</td><td style="color:#555;padding-right:12px">Station</td><td style="color:#555">Station − truck</td></tr>
       ${row('Air', a.ptAir, a.rwisAir, a.airDiff)}${row('Road', a.ptRoad, a.rwisRoad, a.roadDiff)}</table>
     ${a.comments ? `<p style="margin:8px 0 4px"><b>Comments:</b> ${esc(a.comments)}</p>` : ''}
