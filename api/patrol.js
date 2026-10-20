@@ -88,7 +88,32 @@ const F = {
   defsJson:       'fldivNgQ0BW6Uj6Qd', // "Deficiencies": the working rows, as JSON
   defsRaised:     'fldk2XbHe7J5y7iwU', // "Deficiencies Raised": how many got a work order
   defsWos:        'fldU5hpigJpzZB20V', // "Work Orders Raised": the WO numbers, one per line
+  // Shift-check follow-ups — added 2026-10-20 (see FOLLOW below).
+  deficienciesDmt:      'fldWa6JOTZUsd3qOC', deficienciesMultiple: 'fldpmXE1baT2CaTug',
+  advisoryIssued:       'fldFeyRQrIrnLkj45', advisoryLifted:       'fldMAjqIbKCHzXdDI',
+  illuminationDmt:      'fld1PmEnvdjUe3R6X', illuminationMultiple: 'fldQGVlKkE4QcVgBZ',
+  markingsDmt:          'fldJPXDJaAJNNrqKS', markingsMultiple:     'fldzUpasE5bNEsat9',
+  reflectivityDmt:      'fldzvk8fuGWib35Ap', reflectivityMultiple: 'fldH1bxu0oritgHst',
+  etStickersDmt:        'fldSVU2AHPVH0mYBv', etStickersMultiple:   'fldP5tCAUYr1ARRJ0',
 };
+
+/* ── shift-check follow-ups (Troy, 2026-10-20) ────────────────────────────────
+   "if they select yes for any of them, have a second line appear":
+     Deficiencies, Illumination, Pavement markings, Road sign, ET stickers →
+       Entered into DMT · More than one entry
+     Travel advisory → Issued · Lifted (a box each)
+     SNIC → nothing
+   Tick boxes, not required. A follow-up only means something under a Yes, so a
+   check answered No (or a winter-only check on a summer report) clears its own. */
+const FOLLOW = {
+  deficiencies: [['deficienciesDmt', 'Entered into DMT'], ['deficienciesMultiple', 'More than one entry']],
+  advisory:     [['advisoryIssued', 'Issued'], ['advisoryLifted', 'Lifted']],
+  illumination: [['illuminationDmt', 'Entered into DMT'], ['illuminationMultiple', 'More than one entry']],
+  markings:     [['markingsDmt', 'Entered into DMT'], ['markingsMultiple', 'More than one entry']],
+  reflectivity: [['reflectivityDmt', 'Entered into DMT'], ['reflectivityMultiple', 'More than one entry']],
+  etStickers:   [['etStickersDmt', 'Entered into DMT'], ['etStickersMultiple', 'More than one entry']],
+};
+const FOLLOW_KEYS = Object.values(FOLLOW).flat().map(([k]) => k);
 
 /* ── deficiencies raised from the shift report ───────────────────────────────
    Troy's numbers: 404 work orders sourced "Road patrol" in 90 days, roughly one
@@ -326,6 +351,7 @@ function shape(rec) {
     markings:       !!f[F.markings],
     reflectivity:   !!f[F.reflectivity],
     etStickers:     !!f[F.etStickers],
+    ...Object.fromEntries(FOLLOW_KEYS.map(k => [k, !!f[F[k]]])),
     comments:       f[F.comments] || '',
     status:         sel(f[F.status]) || 'Submitted',
     lastSavedAt:    f[F.lastSavedAt] || '',
@@ -413,6 +439,17 @@ function toFields(b) {
 
   // SNIC ops and travel advisory are winter questions.
   if (winter) { cb(F.snic, b.snic); cb(F.advisory, b.advisory); }
+
+  /* Follow-ups: written when sent, like the checks. Under a check answered No
+     they are cleared whatever was sent; travel advisory is winter-only, so a
+     summer report never writes its two. */
+  for (const [check, items] of Object.entries(FOLLOW)) {
+    if (check === 'advisory' && !winter) continue;
+    for (const [k] of items) {
+      if (b[check] === false) f[F[k]] = false;
+      else cb(F[k], b[k]);
+    }
+  }
 
   f[F.source]      = 'Road Patrol app';
   f[F.lastSavedAt] = new Date().toISOString();
@@ -613,13 +650,15 @@ function reportHtml(row) {
   }
 
   const checks = [
-    ['OMM deficiencies entered', row.deficiencies],
-    ...(winter ? [['SNIC ops deployed', row.snic], ['Travel advisory issued / lifted', row.advisory]] : []),
-    ['Highway illumination inspection', row.illumination],
-    ['Pavement markings checked', row.markings],
-    ['Road sign reflectivity checked', row.reflectivity],
-    ['ET stickers & reflectors checked', row.etStickers],
+    ['OMM deficiencies entered', row.deficiencies, 'deficiencies'],
+    ...(winter ? [['SNIC ops deployed', row.snic], ['Travel advisory issued / lifted', row.advisory, 'advisory']] : []),
+    ['Highway illumination inspection', row.illumination, 'illumination'],
+    ['Pavement markings checked', row.markings, 'markings'],
+    ['Road sign reflectivity checked', row.reflectivity, 'reflectivity'],
+    ['ET stickers & reflectors checked', row.etStickers, 'etStickers'],
   ];
+  // Under a Yes, the follow-ups that were ticked (2026-10-20).
+  const followText = (key, v) => (v && FOLLOW[key] ? FOLLOW[key].filter(([k]) => row[k]).map(([, l]) => l).join(' · ') : '');
 
   return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;max-width:640px">
   <div style="background:#1E2B5E;color:#fff;padding:16px 20px;border-bottom:3px solid #C9A84C">
@@ -632,7 +671,8 @@ function reportHtml(row) {
   </table>
   <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#15616D;margin:18px 0 6px">Shift checks</div>
   <table style="width:100%;border-collapse:collapse">
-    ${checks.map(([k, v]) => `<tr><td style="padding:6px 0;border-bottom:1px solid #f2f1ee">${e(k)}</td>
+    ${checks.map(([k, v, key]) => `<tr><td style="padding:6px 0;border-bottom:1px solid #f2f1ee">${e(k)}${followText(key, v)
+        ? `<div style="font-size:12px;color:#6B6B6B;margin-top:2px">${e(followText(key, v))}</div>` : ''}</td>
       <td style="padding:6px 0;border-bottom:1px solid #f2f1ee;text-align:right;font-weight:600;color:${v ? '#0F6E56' : '#6B6B6B'}">${yn(v)}</td></tr>`).join('')}
   </table>
   ${row.comments ? `<div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#15616D;margin:18px 0 6px">Comments</div>
@@ -1073,5 +1113,6 @@ module.exports.__test = {
   // section 7 — the deficiencies raised from the report
   F, cleanDef, cleanDefs, parseDefs, mergeDefs, defReady, deficiencyId,
   toFields, shape, raiseDeficiencies, MAX_DEFS, MAX_DESC, MAX_PHOTOS,
+  FOLLOW, FOLLOW_KEYS, reportHtml,
   PHOTO_URL, DMT_INTAKE_URL,
 };
