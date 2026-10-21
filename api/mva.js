@@ -302,6 +302,13 @@ function flagList(row) {
   return flags;
 }
 
+function atlanticWhen(iso) {
+  try {
+    const p = {}; new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date(iso)).forEach(x => { p[x.type] = x.value; });
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  } catch (_) { return String(iso).replace('T', ' ').slice(0, 16); }
+}
 function subjectFor(row) {
   return `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`;
 }
@@ -310,7 +317,8 @@ function notificationHtml(row) {
   const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages;
   const rows = [
     ['MVA No.', row.mvaNo],
-    ['When', row.occurredAt ? String(row.occurredAt).replace('T', ' ').slice(0, 16) : row.date],
+    // New Brunswick time. It printed the UTC clock until 2026-10-21 (Scott Brownell's 22:16 MVA read "2026-10-21 01:16").
+    ['When', row.occurredAt ? atlanticWhen(row.occurredAt) : row.date],
     ['Where', [row.route, row.km != null ? 'km ' + Number(row.km).toFixed(3) : '', row.direction, row.ramp].filter(Boolean).join(' · ')],
     ['GPS', row.gps || 'Not recorded'],
     ['Division', row.division],
