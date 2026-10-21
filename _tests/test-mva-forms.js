@@ -96,6 +96,7 @@ function seedMva(o) {
 }
 
 const NOW = '2026-10-06T19:30:00.000Z';
+const ON = { arrived: '2026-10-06T18:05:00.000Z', departed: '2026-10-06T19:30:00.000Z' };   // 85 min on scene
 (async () => {
   reset();
   session = S('Employee', 'Patroller', 'Tom Gibson');
@@ -106,17 +107,32 @@ const NOW = '2026-10-06T19:30:00.000Z';
   eq('scene clear: none yet, the patroller may file', [r.status, r.json.list, r.json.canFile], [200, [], true]);
   r = await call('POST', { mva: mid, form: 'scene', comments: 'Lanes open' });
   eq('the time it cleared is required', r.status, 400);
-  r = await call('POST', { mva: mid, form: 'scene', time: NOW, comments: 'Lanes open', copyMe: true });
+  // Troy, 2026-10-21: time arrived and time departed, on every scene clear.
+  r = await call('POST', { mva: mid, form: 'scene', time: NOW, comments: 'Lanes open' });
+  eq('…and the times arrived and departed are required (the patroller attended)', [r.status, /arrived/.test(r.json.error)], [400, true]);
+  r = await call('POST', { mva: mid, form: 'scene', time: NOW, arrived: ON.departed, departed: ON.arrived });
+  eq('…left before arriving: refused', [r.status, /before the time you arrived/.test(r.json.error)], [400, true]);
+  r = await call('POST', { mva: mid, form: 'scene', time: NOW, arrived: '2026-10-04T18:00:00.000Z', departed: ON.departed });
+  eq('…over 24 hours: refused', r.status, 400);
+  r = await call('POST', Object.assign({ mva: mid, form: 'scene', time: NOW, comments: 'Lanes open', copyMe: true }, ON));
   eq('it saves, linked to the MVA', [r.status, r.json.list.length, Object.values(DB[T.sc])[0].fields.flda7zdk29u9LrHkn], [200, 1, [mid]]);
   eq('…emailed to the MVA distribution and a copy to the patroller (directory address)', mails[0] && mails[0].to, ['AccidentGroup2@mrdc.ca', 'tom@mrdc.ca']);
   ok('…the subject names the MVA and the time', /^MVA 2026-10-06-303\.000-EB — scene clear 16:30$/.test(mails[0].subject), mails[0].subject);
   eq('…and Notified records it', r.json.list[0].notified, 'AccidentGroup2@mrdc.ca, tom@mrdc.ca');
-  r = await call('POST', { mva: mid, form: 'scene', time: '2026-10-06T20:00:00.000Z', comments: 'All clear' });
+  eq('…arrived, departed and minutes on scene saved', [r.json.list[0].arrived, r.json.list[0].departed, r.json.list[0].minutes], [ON.arrived, ON.departed, 85]);
+  ok('…and in the email: arrived 15:05, left 16:30, 1 h 25 min', /Arrived on scene[\s\S]*2026-10-06 15:05[\s\S]*Left the scene[\s\S]*2026-10-06 16:30[\s\S]*Time on scene[\s\S]*1 h 25 min/.test(mails[0].html), mails[0].html.slice(0, 200));
+  r = await call('POST', Object.assign({ mva: mid, form: 'scene', time: '2026-10-06T20:00:00.000Z', comments: 'All clear' }, ON));
   eq('a second update is its own record, newest first, no copy', [r.json.list.map(x => x.comments), mails[1].to], [['All clear', 'Lanes open'], ['AccidentGroup2@mrdc.ca']]);
   SWMODE = 'Owner test'; mails = [];
-  r = await call('POST', { mva: mid, form: 'scene', time: NOW });
+  r = await call('POST', Object.assign({ mva: mid, form: 'scene', time: NOW }, ON));
   ok('Owner test: only the Owner gets it, marked [TEST]', mails.length === 1 && mails[0].to[0] === 'TJohnston@mrdc.ca' && /^\[TEST\]/.test(mails[0].subject));
   SWMODE = 'Everyone';
+  { // Filed "Not at scene" (called in by someone else): the times may be left blank.
+    const nas = seedMva({ fldAHBI3DRccnKHLk: true, fldgIA9dpSAllebrF: 'Western' });
+    r = await call('POST', { mva: nas, form: 'scene', time: NOW, comments: 'Called in by Oromocto' });
+    eq('not at scene: sent without the times, minutes blank', [r.status, (r.json.list.find(x => x.comments === 'Called in by Oromocto') || {}).minutes], [200, null]);
+    ok('…the email says did not attend', /Did not attend/.test(mails[mails.length - 1].html));
+  }
 
   /* 2 — Investigation */
   r = await call('GET', null, { mva: mid, form: 'investigation' });

@@ -52,7 +52,7 @@ function answer(rec, byId) {
   return { id: rec.id, createdTime: '2026-10-06T16:58:20.000Z', fields: out };
 }
 const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
-let FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_RECS = [];
+let SCENE_DB = [], FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_RECS = [];
 // The Employees directory and MVA File Roles, as the route reads them.
 let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
   { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
@@ -69,6 +69,11 @@ const airtable = async (p, opt = {}) => {
   if (table === 'tblShwnpWGogKaZxG') return { records: AR_RECS };
   if (table === 'tblpMfPIXMJhFmuuw') { const pre = ((url.searchParams.get('filterByFormula') || '').match(/^FIND\('(.*)',\{Vehicle Ref\}\)=1$/) || [])[1];
     return { records: VEH_RECS.filter(v => pre && v.fields.fldwfUp29kQs8NQI7.indexOf(pre) === 0) }; }
+  if (table === 'tblExJGXFCqLKPU2V') {                                 // Scene Clear (2026-10-21: required on every MVA)
+    if (m !== 'GET' || !byId) throw new Error('scene clear: read by field id only');
+    const want = ((url.searchParams.get('filterByFormula') || '').match(/='(.*)'$/) || [])[1];
+    return { records: SCENE_DB.filter(x => !want || x.mvaNo === want).map((x, i) => ({ id: 'recS' + i, fields: { fldgoMWeGAjnE1rDn: x.mvaNo, fld9qAqOV0cq9erbe: x.time, fldeAr94oFTARvz1F: x.by } })) };
+  }
   if (table === T_FOLDER) {                                            // the folder rows: always asked for by id
     if (!byId) throw new Error('folder read/write without returnFieldsByFieldId');
     writes.push({ m, byId, table: 'folder' });
@@ -343,10 +348,21 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   const P = (step, extra) => call('PATCH', Object.assign({ id: mid, step }, extra || {}));
   r = await P('submit');
   eq('submit with the folder incomplete: 409', r.status, 409);
-  ok('…names the items and the photos', (r.json.missing || []).length === 9 && /Photos of the accident/.test(r.json.error) && /Photos of the completed repairs \(at least one\)/.test(r.json.error), r.json.error);
+  ok('…names the items, the photos and the scene clear', (r.json.missing || []).length === 10 && /Scene clear/.test(r.json.error) && /Photos of the accident/.test(r.json.error) && /Photos of the completed repairs \(at least one\)/.test(r.json.error), r.json.error);
   for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
                     'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
     await call('POST', { action: 'folder', id: mid, item: it, done: true });
+  r = await P('submit');
+  ok('items ticked, no photos, no scene clear: the scene clear is still missing', r.status === 409 && (r.json.missing || []).includes('Scene clear (send it from the MVA)'), JSON.stringify(r.json.missing));
+  r = await call('GET', null, { id: mid });
+  eq('the file says no scene clear was sent', r.json.sceneClear, { sent: false });
+  r = await call('GET');
+  eq('…and so does the list', r.json.rows.find(x => x.id === mid).sceneClearSent, false);
+  SCENE_DB.push({ mvaNo: '2026-10-06-303.000-EB', time: '2026-10-06T18:10:00.000Z', by: 'Tom Gibson' });
+  r = await call('GET', null, { id: mid });
+  eq('once sent: the file shows when and by whom', r.json.sceneClear, { sent: true, time: '2026-10-06T18:10:00.000Z', by: 'Tom Gibson', count: 1 });
+  r = await call('GET');
+  eq('…and the list', r.json.rows.find(x => x.id === mid).sceneClearSent, true);
   r = await P('submit');
   eq('every item ticked but no photos: still 409', [r.status, (r.json.missing || []).length], [409, 2]);
   await call('POST', { action: 'folderFile', id: mid, item: 'Accident photos and damages', data: 'eA==', filename: 'scene.jpg', contentType: 'image/jpeg' });
@@ -445,6 +461,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   await call('POST', { action: 'folderFile', id: m2, item: 'Accident photos and damages', data: 'eA==', filename: 'a.jpg', contentType: 'image/jpeg' });
   await call('POST', { action: 'folderFile', id: m2, item: 'Photos of the completed repairs', data: 'eA==', filename: 'b.jpg', contentType: 'image/jpeg' });
   AR_RECS = [];
+  SCENE_DB.push({ mvaNo: (await call('GET', null, { id: m2 })).json.row.mvaNo, time: '2026-10-06T18:30:00.000Z', by: 'Tom Gibson' });
   mails = [];
   r = await call('PATCH', { id: m2, step: 'submit' });
   eq('Owner test: the step email goes to the Owner only', [r.status, mails.length, mails[0] && mails[0].to], [200, 1, ['TJohnston@mrdc.ca']]);
