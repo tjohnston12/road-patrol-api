@@ -355,6 +355,9 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   AR_RECS = [{ id: 'recAR', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldmEpRePHQOxRBkv: [{ id: 'attR', url: 'https://x/fixed.jpg', filename: 'fixed.jpg', type: 'image/jpeg' }] } }];
   r = await call('GET', null, { id: mid });
   eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
+  // Troy, 2026-10-21: the notification itself, as emailed, in the file.
+  ok('the file carries the notification as emailed', r.json.notification && /MVA Notification — 2026-10-06-303\.000-EB/.test(r.json.notification.html) && /^MVA 2026-10-06-303\.000-EB/.test(r.json.notification.subject) && 'sentTo' in r.json.notification && 'sentAt' in r.json.notification, JSON.stringify(r.json.notification && r.json.notification.subject));
+  ok('…with the GPS line (Not recorded when blank)', /GPS<\/td>[\s\S]{0,120}(Not recorded|\d)/.test(r.json.notification.html));
   eq('the photos panel gathers every photo in the file', [r.json.photos.accident, r.json.photos.repair, r.json.photos.list.map(p => p.source)],
      [1, 1, ['Accident report — repairs', 'Folder — Accident photos and damages']]);
   VEH_RECS = [{ id: 'recV3', fields: { fldwfUp29kQs8NQI7: '2026-10-06-303.000-EB-AR-V3', fldCOloDspNrByuT7: 3, fld3RVNUJQDkjFxpi: [{ id: 'attI3', url: 'https://x/i3.jpg' }] } },
