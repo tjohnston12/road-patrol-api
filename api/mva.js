@@ -302,6 +302,9 @@ function flagList(row) {
   return flags;
 }
 
+function subjectFor(row) {
+  return `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`;
+}
 function notificationHtml(row) {
   const flags = flagList(row);
   const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages;
@@ -309,6 +312,7 @@ function notificationHtml(row) {
     ['MVA No.', row.mvaNo],
     ['When', row.occurredAt ? String(row.occurredAt).replace('T', ' ').slice(0, 16) : row.date],
     ['Where', [row.route, row.km != null ? 'km ' + Number(row.km).toFixed(3) : '', row.direction, row.ramp].filter(Boolean).join(' · ')],
+    ['GPS', row.gps || 'Not recorded'],
     ['Division', row.division],
     ['Patroller', row.patroller + (row.notAtScene ? ' — did not attend the scene' : '')],
     ['Vehicles involved', row.vehicles != null ? String(row.vehicles) : '—'],
@@ -573,7 +577,10 @@ module.exports = async function handler(req, res) {
         const row = await loadOwned(id, caller, ctx);
         if (!row) return res.status(404).json(NOT_FOUND);
         res.setHeader('Cache-Control', 'no-store');
-        return res.status(200).json({ row, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
+        // Troy, 2026-10-21: "include the actual mva notification with the my files so they can be
+        // seen and reviewed" — the notification exactly as it was emailed, and who it went to.
+        const notification = { html: notificationHtml(row), sentTo: row.notified || '', sentAt: row.notifiedAt || '', subject: subjectFor(row) };
+        return res.status(200).json({ row, notification, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
           photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
       }
       // Anyone on the file's route (a manager of someone, the approver, the claims
@@ -687,7 +694,7 @@ module.exports = async function handler(req, res) {
       // reached; nobody else. Off, a missing row, or a switch that cannot be read:
       // nothing is sent. Everyone: the Accident Group + the patroller.
       const real = recipients(NOTIFY_TO, row.patrollerEmail);
-      const subject = `MVA ${row.mvaNo}${flagList(row).length ? ' — ' + flagList(row)[0].replace(/&amp;/g, '&') : ''}`;
+      const subject = subjectFor(row);
       let sw = { id: null, mode: 'Off' };
       try { sw = await C.switchFor(SWITCH); } catch (_) { sw = { id: null, mode: 'Off' }; }
       let sentTo = [], note;
