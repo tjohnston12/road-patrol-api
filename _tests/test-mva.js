@@ -357,6 +357,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
   // Troy, 2026-10-21: the notification itself, as emailed, in the file.
   ok('the file carries the notification as emailed', r.json.notification && /MVA Notification — 2026-10-06-303\.000-EB/.test(r.json.notification.html) && /^MVA 2026-10-06-303\.000-EB/.test(r.json.notification.subject) && 'sentTo' in r.json.notification && 'sentAt' in r.json.notification, JSON.stringify(r.json.notification && r.json.notification.subject));
+  ok('…the time in New Brunswick, not UTC (16:56 UTC on 6 Oct = 13:56 ADT)', /When<\/td>[\s\S]{0,120}2026-10-06 13:56/.test(r.json.notification.html), (r.json.notification.html.match(/When<\/td>[\s\S]{0,120}/) || [''])[0]);
   ok('…with the GPS line (Not recorded when blank)', /GPS<\/td>[\s\S]{0,120}(Not recorded|\d)/.test(r.json.notification.html));
   eq('the photos panel gathers every photo in the file', [r.json.photos.accident, r.json.photos.repair, r.json.photos.list.map(p => p.source)],
      [1, 1, ['Accident report — repairs', 'Folder — Accident photos and damages']]);
