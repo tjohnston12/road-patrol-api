@@ -5,8 +5,9 @@
  * magic please". The Accident Report and Proof of Repairs are api/accident.js; these are
  * the other two, field for field from their exports:
  *
- *  · MVA Scene Clear — "only required when traffic has been affected or an update to
- *    others is needed": the MVA, the patroller, the time the scene cleared, comments, and
+ *  · MVA Scene Clear — REQUIRED ON EVERY MVA since 2026-10-21 (Troy: "Lets make scene clear
+ *    mandatory for all MVAs"; the accident file cannot be submitted without one — mva.js). It was
+ *    "only required when traffic has been affected or an update to others is needed": the MVA, the patroller, the time the scene cleared, comments, and
  *    a copy to the patroller. One MVA can have several (each is an update). Each one
  *    emails the MVA's distribution (AccidentGroup2) — the same as the notification.
  *  · MVA Investigation Report — "to document the investigation of an MVA when a Hit &
@@ -38,7 +39,12 @@ const APP_URL = process.env.PATROL_APP_URL || 'https://www.mrdc-htra.com/patrol/
 const T_SC = 'tblExJGXFCqLKPU2V', T_INV = 'tblA5YveLsiSYd98t';
 const SC = { mvaNo: 'fldgoMWeGAjnE1rDn', mva: 'flda7zdk29u9LrHkn', patroller: 'fldeAr94oFTARvz1F', time: 'fld9qAqOV0cq9erbe',
   comments: 'fldtM6ZfOeYIkKLCM', sendCopy: 'fldhoeecflNZN1UGq', copyEmail: 'fldZqEZt2MpFKCD66', submittedBy: 'fld8IPKtkVfxovtTI',
-  submittedAt: 'fldRBkUcn9SLcNBmE', notified: 'fldoFxoKrlfEERGos' };
+  submittedAt: 'fldRBkUcn9SLcNBmE', notified: 'fldoFxoKrlfEERGos',
+  // Troy, 2026-10-21: "on that form include a section for the patroller to enter total time on scene,
+  // so time arrived and time departed".
+  arrived: 'fldoYfcTjzTvYI7f8', departed: 'fldk10kP3AS3z9dKc', minutes: 'fldOosfHneDrPlcQ5' };
+const isIso = v => /^\d{4}-\d{2}-\d{2}T/.test(String(v || '')) && !isNaN(Date.parse(v));
+const hm = m => m == null ? '' : (m >= 60 ? Math.floor(m / 60) + ' h ' : '') + (m % 60) + ' min';
 const IV = { invNo: 'fldCNGwdH57csZuUV', openedAt: 'fldSxull8ZS33Tsj9', investigator: 'fldu8z1OpJYo2Mjtp', officer: 'fldm2cuINWQWvVVdD',
   policeFile: 'fldIRpG4Nbf4ODFzF', policeDetails: 'fld1NeyHiCeYftBvd', comments: 'fldwDKuYxol78asjo', photos: 'fldDVGx1LaJuf2HmO',
   submittedBy: 'fldXWkSC29Fho0v9F', submittedAt: 'fldnPnOjQnq0A44ah', mva: 'fldBJWC0xPHcECoRq', verifiedBy: 'fldyQZXCo9NWhtUCF',
@@ -83,7 +89,8 @@ const mt = iso => { if (!iso) return ''; try { return new Intl.DateTimeFormat('e
 // ── Scene Clear ───────────────────────────────────────────────────────────────
 function shapeSC(r) { const f = r.fields || {};
   return { id: r.id, time: f[SC.time] || '', comments: f[SC.comments] || '', patroller: f[SC.patroller] || '', sendCopy: !!f[SC.sendCopy],
-    submittedBy: f[SC.submittedBy] || '', submittedAt: f[SC.submittedAt] || '', notified: f[SC.notified] || '' }; }
+    submittedBy: f[SC.submittedBy] || '', submittedAt: f[SC.submittedAt] || '', notified: f[SC.notified] || '',
+    arrived: f[SC.arrived] || '', departed: f[SC.departed] || '', minutes: f[SC.minutes] != null ? f[SC.minutes] : null }; }
 async function sceneClears(mva) {
   const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true');
   qs.set('filterByFormula', `{MVA No.}='${String(mva.mvaNo).replace(/'/g, "\\'")}'`);
@@ -149,13 +156,27 @@ module.exports = async function handler(req, res) {
       if (!mayFile) return res.status(403).json({ error: 'Only the patroller on this MVA sends its scene clear.' });
       const time = String(q.time || '');
       if (!/^\d{4}-\d{2}-\d{2}T/.test(time) || isNaN(Date.parse(time))) return res.status(400).json({ error: 'The time the scene cleared is required' });
+      // Time on scene: arrived and departed, required when the patroller attended (not when the
+      // MVA was filed "Not at scene" — called in by someone else).
+      const arrived = String(q.arrived || ''), departed = String(q.departed || '');
+      if ((arrived || departed || !mva.notAtScene) && !(isIso(arrived) && isIso(departed)))
+        return res.status(400).json({ error: 'Enter the time you arrived at the scene and the time you left' });
+      let minutes = null;
+      if (arrived && departed) {
+        minutes = Math.round((Date.parse(departed) - Date.parse(arrived)) / 60000);
+        if (minutes < 0) return res.status(400).json({ error: 'The time you left is before the time you arrived' });
+        if (minutes > 24 * 60) return res.status(400).json({ error: 'More than 24 hours on scene — check the dates' });
+      }
       const copyTo = q.copyMe ? (await emailOf(mva.patroller, ctx)) || (await emailOf(who, ctx)) : '';
       const rec = await airtable(`${M.BASE}/${T_SC}`, { method: 'POST', body: JSON.stringify({ returnFieldsByFieldId: true, fields: {
         [SC.mvaNo]: mva.mvaNo, [SC.mva]: [mva.id], [SC.patroller]: mva.patroller || who, [SC.time]: time,
         [SC.comments]: String(q.comments || '').slice(0, 5000), [SC.sendCopy]: !!q.copyMe, [SC.copyEmail]: copyTo || null,
-        [SC.submittedBy]: who, [SC.submittedAt]: now } }) });
+        [SC.submittedBy]: who, [SC.submittedAt]: now,
+        [SC.arrived]: arrived || null, [SC.departed]: departed || null, [SC.minutes]: minutes } }) });
       const mail = await send([NOTIFY_TO, copyTo], `MVA ${mva.mvaNo} — scene clear ${mt(time).slice(11)}`,
-        mailHtml(mva, 'Scene clear', [['Scene cleared', mt(time)], ['Patroller', mva.patroller || who], ['Comments', String(q.comments || '')]]));
+        mailHtml(mva, 'Scene clear', [['Scene cleared', mt(time)], ['Patroller', mva.patroller || who],
+          ['Arrived on scene', arrived ? mt(arrived) : 'Did not attend'], ['Left the scene', departed ? mt(departed) : '—'],
+          ['Time on scene', minutes != null ? hm(minutes) : '—'], ['Comments', String(q.comments || '')]]));
       await airtable(`${M.BASE}/${T_SC}/${rec.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields: { [SC.notified]: mail.note } }) });
       return res.status(200).json({ mva, list: await sceneClears(mva), mail: { mode: mail.mode } });
     }

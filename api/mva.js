@@ -405,6 +405,25 @@ async function folderRows(mvaNo) {
   } while (offset);
   return out;
 }
+// ── Scene clears (Troy, 2026-10-21: "Lets make scene clear mandatory for all MVAs") ──────
+// Sent from scene-clear.html (api/mva-forms.js) into the Scene Clear table. Every MVA needs one
+// before its accident file can be submitted. mvaNo '' reads them all (for the list).
+const T_SCENE = 'tblExJGXFCqLKPU2V';
+const SCF = { mvaNo: 'fldgoMWeGAjnE1rDn', time: 'fld9qAqOV0cq9erbe', patroller: 'fldeAr94oFTARvz1F', submittedAt: 'fldRBkUcn9SLcNBmE' };
+async function sceneClearsFor(mvaNo) {
+  const out = []; let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', '100'); qs.set('returnFieldsByFieldId', 'true');
+    if (mvaNo) qs.set('filterByFormula', `{MVA No.}='${String(mvaNo).replace(/'/g, "\\'")}'`);
+    if (offset) qs.set('offset', offset);
+    const page = await airtable(`${BASE}/${T_SCENE}?${qs}`);
+    out.push(...(page.records || [])); offset = page.offset;
+  } while (offset);
+  return out.map(r => { const f = r.fields || {}; return { mvaNo: f[SCF.mvaNo] || '', time: f[SCF.time] || '', by: f[SCF.patroller] || '' }; })
+    .sort((a, b) => String(b.time).localeCompare(String(a.time)));
+}
+function sceneView(list) { const last = list[0]; return last ? { sent: true, time: last.time, by: last.by, count: list.length } : { sent: false }; }
 // The folder as the page shows it: every item, in order, saved or not.
 function folderView(row, recs) {
   const by = {}; for (const r of recs) { const it = shapeItem(r); if (ITEMS.includes(it.item)) by[it.item] = it; }
@@ -588,7 +607,9 @@ module.exports = async function handler(req, res) {
         // Troy, 2026-10-21: "include the actual mva notification with the my files so they can be
         // seen and reviewed" — the notification exactly as it was emailed, and who it went to.
         const notification = { html: notificationHtml(row), sentTo: row.notified || '', sentAt: row.notifiedAt || '', subject: subjectFor(row) };
-        return res.status(200).json({ row, notification, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
+        let sceneClear = { sent: false };
+        try { sceneClear = sceneView(await sceneClearsFor(row.mvaNo)); } catch (_) { sceneClear = { sent: false, unknown: true }; }
+        return res.status(200).json({ row, notification, sceneClear, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
           photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
       }
       // Anyone on the file's route (a manager of someone, the approver, the claims
@@ -602,6 +623,10 @@ module.exports = async function handler(req, res) {
       let all = []; try { all = rows.length ? await folderRows('') : []; } catch (_) { all = []; }
       const by = {}; for (const r of all) { const f = r.fields || {}; (by[f[FF.mvaNo]] = by[f[FF.mvaNo]] || []).push(r); }
       for (const r of rows) { const v = folderView(r, by[r.mvaNo] || []); r.folderDone = v.done; r.folderTotal = v.total; }
+      // Scene clear sent? One read of the Scene Clear table. Unknown (null) if it cannot be read.
+      let scs = null; try { scs = rows.length ? await sceneClearsFor('') : []; } catch (_) { scs = null; }
+      const sent = new Set((scs || []).map(s => s.mvaNo));
+      for (const r of rows) r.sceneClearSent = scs ? sent.has(r.mvaNo) : null;
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ rows, scope: caller.isAdmin ? 'all' : reviewer ? 'review' : 'mine', items: FOLDER,
         roles: { ops: t.roles.ops, claims: t.roles.claims } });
@@ -851,6 +876,7 @@ async function step(row, body, caller, ctx, res) {
     const ph = await photosFor(row);
     if (!ph.accident) missing.push('Photos of the accident and damages (at least one)');
     if (!ph.repair) missing.push('Photos of the completed repairs (at least one)');
+    if (!(await sceneClearsFor(row.mvaNo)).length) missing.push('Scene clear (send it from the MVA)');
     if (missing.length) return res.status(409).json({ error: 'Not ready to submit: ' + missing.join(', '), missing });
     const verifier = verifierName(row, t);
     const out = await go({ [F.stage]: 'Awaiting verification', [F.fileSubBy]: who, [F.fileSubAt]: now, [F.sentBackNote]: '',
