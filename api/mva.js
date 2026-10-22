@@ -111,7 +111,22 @@ const F = {
   sentBackNote:   'fldx4tHHCSKrUIuJL',
   paidDate:       'fldP5WqwAuKVhvSMd',
   paidAmount:     'fldgJYeGT2PxIWOBz',
+  // Troy, 2026-10-22: an Unknown answer, for a hit and run found after the fact.
+  unknown:        'fldp2mql8SRymh6dC',
 };
+
+/* The questions a patroller may answer Unknown, and how each is written in
+   'Unknown at Scene'. An Unknown question's checkbox stays unticked; this list is
+   what says it was not a "no". */
+const UNKNOWABLE = { injuries: 'Injuries', fatality: 'Fatality', hitRun: 'Hit & run', vehicles: 'Vehicles involved' };
+function unknownKeys(v) {
+  const want = Array.isArray(v) ? v : [];
+  return Object.keys(UNKNOWABLE).filter(k => want.includes(k));
+}
+function parseUnknown(text) {
+  const parts = String(text || '').split(',').map(x => x.trim());
+  return Object.keys(UNKNOWABLE).filter(k => parts.includes(UNKNOWABLE[k]));
+}
 
 const CHOICES = {
   divisions:  ['Eastern', 'Western'],
@@ -145,6 +160,7 @@ function shape(rec) {
     ramp:           f[F.ramp] || '',
     gps:            f[F.gps] || '',
     vehicles:       f[F.vehicles] != null ? f[F.vehicles] : null,
+    unknown:        parseUnknown(f[F.unknown]),
     services:       arr(f[F.services]).map(sel),
     policeFile:     f[F.policeFile] || '',
     injuries:       !!f[F.injuries],
@@ -270,7 +286,9 @@ function toFields(b, mvaNo) {
   if (b.extensiveTC && b.addlResCalled) set(F.addlResources, String(b.addlResources || '').trim().slice(0, 2000));
   set(F.submittedBy,    b.submittedBy);
   n(F.km,          b.km);
-  n(F.vehicles,    b.vehicles);
+  const unk = unknownKeys(b.unknown);
+  if (!unk.includes('vehicles')) n(F.vehicles, b.vehicles);
+  if (unk.length) f[F.unknown] = unk.map(k => UNKNOWABLE[k]).join(', ');
   n(F.animalCount, b.animalCount);
   if (b.services !== undefined) f[F.services] = pickMany(CHOICES.services, b.services);
 
@@ -278,7 +296,7 @@ function toFields(b, mvaNo) {
   [['injuries','injuries'],['fatality','fatality'],['spill','spill'],['doeCalled','doeCalled'],
    ['fire','fire'],['damages','damages'],['hitRun','hitRun'],['extensiveTC','extensiveTC'],
    ['blocked','blocked'],['towGo','towGo'],['redLights','redLights'],['pinkSign','pinkSign'],
-   ['roadkill','roadkill'],['notAtScene','notAtScene'],['workZone','workZone']].forEach(([key, prop]) => { f[F[key]] = !!b[prop]; });
+   ['roadkill','roadkill'],['notAtScene','notAtScene'],['workZone','workZone']].forEach(([key, prop]) => { f[F[key]] = !!b[prop] && !unk.includes(key); });
   f[F.addlResCalled] = !!(b.extensiveTC && b.addlResCalled);
 
   f[F.source]      = 'Road Patrol app';
@@ -290,12 +308,16 @@ function toFields(b, mvaNo) {
 // ─── Notification email ────────────────────────────────────────────────────
 function flagList(row) {
   const flags = [];
+  const unk = row.unknown || [];
   if (row.fatality)    flags.push('FATALITY');
+  if (unk.includes('fatality')) flags.push('Fatality unknown');
   if (row.injuries)    flags.push('Injuries');
+  if (unk.includes('injuries')) flags.push('Injuries unknown');
   if (row.fire)        flags.push('Fire');
   if (row.spill)       flags.push('Spill' + (row.doeCalled ? ' (Dept. of Environment called)' : ' — DEPT. OF ENVIRONMENT NOT YET CALLED'));
   if (row.damages)     flags.push('Damages to facility');
   if (row.hitRun)      flags.push('Hit &amp; run');
+  if (unk.includes('hitRun')) flags.push('Hit &amp; run unknown');
   if (row.blocked)     flags.push('Highway blocked' + (row.lanes ? ' — ' + esc(row.lanes) : ''));
   if (row.extensiveTC) flags.push('Extensive traffic control' + (row.addlResCalled ? ' — additional resources called' : ''));
   if (row.workZone)    flags.push('In a work zone / lane closure');
@@ -314,7 +336,8 @@ function subjectFor(row) {
 }
 function notificationHtml(row) {
   const flags = flagList(row);
-  const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages;
+  const unk = row.unknown || [];
+  const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages || unk.includes('injuries') || unk.includes('fatality');
   const rows = [
     ['MVA No.', row.mvaNo],
     // New Brunswick time. It printed the UTC clock until 2026-10-21 (Scott Brownell's 22:16 MVA read "2026-10-21 01:16").
@@ -323,7 +346,7 @@ function notificationHtml(row) {
     ['GPS', row.gps || 'Not recorded'],
     ['Division', row.division],
     ['Patroller', row.patroller + (row.notAtScene ? ' — did not attend the scene' : '')],
-    ['Vehicles involved', row.vehicles != null ? String(row.vehicles) : '—'],
+    ['Vehicles involved', unk.includes('vehicles') ? 'Unknown' : row.vehicles != null ? String(row.vehicles) : '—'],
     ['Emergency services', (row.services || []).join(', ') || 'None'],
     ['Police file no.', row.policeFile || '—'],
     ['Tow', row.towGo ? (row.towCompany || 'Yes') : 'No'],
