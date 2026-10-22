@@ -211,6 +211,9 @@ module.exports = async function handler(req, res) {
             ['Unknown damages at notification', v.unknownDamages ? 'Yes' : 'No'], ['Facility assets damaged', v.facilityDamaged],
             ['Entered in the DMT', v.dmtEntered ? 'Yes' : 'No'], ['Damages / comments', v.comments], ['GPS', v.gps], ['Photos', String(v.photos.length)]]));
         rec = await patch({ [IV.status]: 'Submitted', [IV.submittedBy]: who, [IV.submittedAt]: now, [IV.notified]: mail.note });
+        // Troy, 2026-10-22: the investigation is part of the accident file — tick it there.
+        try { await M.upsertItem(mva, M.INV_ITEM, { [M.FF.done]: true, [M.FF.doneBy]: who, [M.FF.doneAt]: now, [M.FF.updatedBy]: who, [M.FF.updatedAt]: now }); }
+        catch (e) { console.warn('mva-forms: folder tick for the investigation failed:', e.message); }
         return res.status(200).json({ mva, report: shapeIV(rec), saved: 'submitted', mail: { mode: mail.mode } });
       }
     }
@@ -220,4 +223,4 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { ivMissing, ivFields, shapeIV, IV, SC };
+module.exports.lib = { ivMissing, ivFields, shapeIV, findIV, IV, SC };

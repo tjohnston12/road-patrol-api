@@ -390,7 +390,12 @@ module.exports = async function handler(req, res) {
       const found = await findReport(mva);
       const [fleet, fromReport, units, people] = await Promise.all([truckChoices(), truckFromReport(mva), BD.getFleet().catch(() => []),
         L.getEmployees().catch(() => [])]);
-      return res.status(200).json({ mva, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: Object.assign({}, CHOICES, { equipKinds: EQUIP_KINDS }),
+      // Troy, 2026-10-22: the investigation report's police and damage details carry into this report
+      // (the page fills only the boxes that are still empty). Never fatal.
+      let investigation = null;
+      try { const IVL = require('./mva-forms').lib; investigation = IVL.shapeIV(await IVL.findIV(mva)); }
+      catch (e) { console.warn('accident: investigation lookup:', e.message); }
+      return res.status(200).json({ mva, investigation, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: Object.assign({}, CHOICES, { equipKinds: EQUIP_KINDS }),
         admin: !!caller.isAdmin, canEdit: M.canEdit(mva), truck: { fleet, fromReport },
         tc: { people: people.filter(p => p.active).map(p => p.name).sort(), units: units.map(u => ({ unit: u.unit, description: BD.describeUnit(u), depot: u.depot })) } });
     }

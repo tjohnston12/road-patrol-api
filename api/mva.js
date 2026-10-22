@@ -395,11 +395,16 @@ const FOLDER = [
   { item: 'Accident Claim Checklist',        hint: 'Signed by the patroller and the Area Manager.' },
 ];
 const ITEMS = FOLDER.map(x => x.item);
+/* The investigation report (Troy, 2026-10-22: put it in the accident file). In the folder only when
+   the MVA needs one (Investigation Required — a hit & run) or one has been ticked. It is ticked by
+   submitting the investigation report (mva-forms.js), never by hand, so it is not in ITEMS. */
+const INV_ITEM = 'Investigation report';
+const INV_HINT = 'Hit & run — ticked when the investigation report is submitted. Its police details carry into the accident report.';
 function folderHtml(row) {
   return `<div style="margin-top:16px;border:1px solid #DDD9D0;border-radius:8px;padding:12px 16px">
     <div style="font-weight:600;margin-bottom:6px">Accident file folder — ${esc(row.mvaNo)}</div>
     <div style="font-size:13px;color:#6B6B6B;margin-bottom:6px">${esc(row.patroller || 'The patroller')} builds and completes the folder for this MVA:</div>
-    <ul style="margin:0;padding-left:20px">${FOLDER.map(i => `<li style="padding:2px 0">${esc(i.item)}${i.hint ? ' — ' + esc(i.hint) : ''}</li>`).join('')}</ul>
+    <ul style="margin:0;padding-left:20px">${FOLDER.map(i => `<li style="padding:2px 0">${esc(i.item)}${i.hint ? ' — ' + esc(i.hint) : ''}</li>`).join('')}${row.invRequired ? `<li style="padding:2px 0">${esc(INV_ITEM)} — the hit &amp; run investigation</li>` : ''}</ul>
     <div style="margin-top:8px;font-size:13px"><a href="${esc(APP_URL)}mvas.html?id=${encodeURIComponent(row.id)}" style="color:#15616D">Open the folder in the Road Patrol app</a></div></div>`;
 }
 
@@ -449,8 +454,10 @@ async function sceneClearsFor(mvaNo) {
 function sceneView(list) { const last = list[0]; return last ? { sent: true, time: last.time, by: last.by, count: list.length } : { sent: false }; }
 // The folder as the page shows it: every item, in order, saved or not.
 function folderView(row, recs) {
-  const by = {}; for (const r of recs) { const it = shapeItem(r); if (ITEMS.includes(it.item)) by[it.item] = it; }
+  const by = {}; for (const r of recs) { const it = shapeItem(r); if (ITEMS.includes(it.item) || it.item === INV_ITEM) by[it.item] = it; }
   const items = FOLDER.map(x => Object.assign({ item: x.item, hint: x.hint, done: false, files: [], notes: '' }, by[x.item] || {}, { hint: x.hint }));
+  if ((row && row.invRequired) || by[INV_ITEM])
+    items.push(Object.assign({ item: INV_ITEM, done: false, files: [], notes: '' }, by[INV_ITEM] || {}, { hint: INV_HINT, auto: true }));
   return { items, done: items.filter(i => i.done).length, total: items.length };
 }
 async function upsertItem(row, item, fields) {
@@ -960,4 +967,4 @@ async function step(row, body, caller, ctx, res) {
 
 // Shared with api/accident.js (the Accident Report + Proof of Repairs, 2026-10-06):
 // the same ownership rule and the same folder rows.
-module.exports.lib = { recentMvas, BASE, TABLE, F, FF, FOLDER, ITEMS, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
+module.exports.lib = { recentMvas, BASE, TABLE, F, FF, FOLDER, ITEMS, INV_ITEM, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
