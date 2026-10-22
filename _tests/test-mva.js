@@ -504,10 +504,16 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('…hit & run (answered) is still ticked', uf.fldWIW6ejsJGjrMCM, true);
   eq('the row reads it back', r.json.row.unknown, ['injuries', 'fatality', 'vehicles']);
   const um = mails[0] || {};
-  ok('the email flags Fatality unknown and Injuries unknown', /Fatality unknown/.test(um.html) && /Injuries unknown/.test(um.html), (um.html || '').slice(0, 300));
+  // Troy, 2026-10-22: "only tag injuries or fatalities in the notification if yes, if it is unknown just leave as unknown"
+  ok('Unknown injuries / fatality are NOT flagged', !/Fatality unknown|Injuries unknown/.test(um.html), (um.html || '').slice(0, 300));
+  ok('…they are plain lines: Injuries Unknown, Fatality Unknown', /Injuries<\/td>\s*<td[^>]*>Unknown</.test(um.html) && /Fatality<\/td>\s*<td[^>]*>Unknown</.test(um.html));
   ok('…Vehicles involved: Unknown', /Vehicles involved<\/td>\s*<td[^>]*>Unknown</.test(um.html));
-  ok('…in the red (serious) banner', /#FBEBEB/.test(um.html));
-  eq('…subject leads with the first flag', um.subject, 'MVA 2026-10-06-303.000-EB — Fatality unknown');
+  ok('…no red banner for an unknown (damages and hit & run keep theirs)', !/#FBEBEB/.test(um.html) || /Damages to facility/.test(um.html));
+  eq('…subject leads with the first real flag', um.subject, 'MVA 2026-10-06-303.000-EB — Damages to facility');
+  reset();
+  r = await call('POST', { ...BASE_MVA, damages: false, damageDesc: '', unknown: ['injuries', 'fatality'] });
+  const um2 = mails[0] || {};
+  ok('only injuries / fatality unknown: no red banner, no flag, plain subject', !/#FBEBEB/.test(um2.html) && um2.subject === 'MVA 2026-10-06-303.000-EB' && /Injuries<\/td>\s*<td[^>]*>Unknown</.test(um2.html), um2.subject);
   reset();
   r = await call('POST', BASE_MVA);
   ok('no unknowns: the field is not written', !('fldp2mql8SRymh6dC' in DB[r.json.row.id].fields) && JSON.stringify(r.json.row.unknown) === '[]');
