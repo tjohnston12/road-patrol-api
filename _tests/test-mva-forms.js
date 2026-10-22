@@ -156,6 +156,23 @@ const ON = { arrived: '2026-10-06T18:05:00.000Z', departed: '2026-10-06T19:30:00
   eq('it submits', [r.status, r.json.report.status, r.json.report.submittedBy], [200, 'Submitted', 'Tom Gibson']);
   eq('…emailed to the distribution', mails[0] && mails[0].to, ['AccidentGroup2@mrdc.ca']);
   ok('…naming the hit & run, the officer and the file no.', /investigation report \(hit &amp; run\)|investigation report \(hit & run\)/.test(mails[0].subject) && /Cst\. Roy/.test(mails[0].html) && /F-22/.test(mails[0].html));
+  // Troy, 2026-10-22: the investigation is part of the accident file — submitting ticks it there.
+  { const fr = Object.values(DB[T.folder]).find(x => x.fields.fldLCZxKhdozk8fhk === 'Investigation report');
+    eq('…ticks "Investigation report" in the accident file, by the patroller', fr && [fr.fields.fldUjL1uELhKd5O3P, fr.fields.fldv9yBGj0fMQglnx, fr.fields.fld0beeAYR8nhCJX7],
+      [true, 'Tom Gibson', '2026-10-06-303.000-EB · Investigation report']); }
+  { const ML = require(path.join(__dirname, '..', 'api', 'mva.js')).lib;
+    const items = (row, recs) => ML.folderView(row, recs || []).items.map(i => i.item);
+    ok('the folder lists it only when an investigation is required', items({ invRequired: true }).slice(-1)[0] === 'Investigation report' && !items({ invRequired: false }).includes('Investigation report'));
+    const v = ML.folderView({ invRequired: true }, []);
+    eq('…not ticked until it is submitted, and marked automatic', [v.items.slice(-1)[0].done, v.items.slice(-1)[0].auto, v.total], [false, true, 8]);
+    ok('…not an item that can be ticked by hand', !ML.ITEMS.includes('Investigation report')); }
+  // …and its police and damage details reach the accident report page, which fills the empty boxes.
+  { const acc = require(path.join(__dirname, '..', 'api', 'accident.js'));
+    let st = 200, js = null; const rs = { status(x) { st = x; return this; }, json(j) { js = j; return this; }, setHeader() {}, end() { return this; } };
+    await acc({ method: 'GET', headers: { cookie: 'htra_session=x' }, query: { mva: mid } }, rs);
+    const ivr = js && js.investigation;
+    eq('the accident report GET carries the investigation', [st, ivr && ivr.invNo, ivr && ivr.officer, ivr && ivr.policeFile, ivr && ivr.rcmp, ivr && ivr.status],
+      [200, '2026-10-06-303.000-EB-INV', 'Cst. Roy', 'F-22', true, 'Submitted']); }
   r = await call('POST', { mva: mid, form: 'investigation', report: { comments: 'changed' } });
   eq('submitted: read-only to the patroller', r.status, 409);
   r = await call('GET', null, { mva: mid, form: 'investigation' });
