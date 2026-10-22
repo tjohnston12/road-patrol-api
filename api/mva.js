@@ -310,9 +310,7 @@ function flagList(row) {
   const flags = [];
   const unk = row.unknown || [];
   if (row.fatality)    flags.push('FATALITY');
-  if (unk.includes('fatality')) flags.push('Fatality unknown');
   if (row.injuries)    flags.push('Injuries');
-  if (unk.includes('injuries')) flags.push('Injuries unknown');
   if (row.fire)        flags.push('Fire');
   if (row.spill)       flags.push('Spill' + (row.doeCalled ? ' (Dept. of Environment called)' : ' — DEPT. OF ENVIRONMENT NOT YET CALLED'));
   if (row.damages)     flags.push('Damages to facility');
@@ -337,7 +335,8 @@ function subjectFor(row) {
 function notificationHtml(row) {
   const flags = flagList(row);
   const unk = row.unknown || [];
-  const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages || unk.includes('injuries') || unk.includes('fatality');
+  // Troy, 2026-10-22: injuries / fatality are flagged only when Yes. Unknown is a plain line below, not a red flag.
+  const serious = row.fatality || row.injuries || row.spill || row.fire || row.damages;
   const rows = [
     ['MVA No.', row.mvaNo],
     // New Brunswick time. It printed the UTC clock until 2026-10-21 (Scott Brownell's 22:16 MVA read "2026-10-21 01:16").
@@ -347,6 +346,8 @@ function notificationHtml(row) {
     ['Division', row.division],
     ['Patroller', row.patroller + (row.notAtScene ? ' — did not attend the scene' : '')],
     ['Vehicles involved', unk.includes('vehicles') ? 'Unknown' : row.vehicles != null ? String(row.vehicles) : '—'],
+    ...(unk.includes('injuries') ? [['Injuries', 'Unknown']] : []),
+    ...(unk.includes('fatality') ? [['Fatality', 'Unknown']] : []),
     ['Emergency services', (row.services || []).join(', ') || 'None'],
     ['Police file no.', row.policeFile || '—'],
     ['Tow', row.towGo ? (row.towCompany || 'Yes') : 'No'],
