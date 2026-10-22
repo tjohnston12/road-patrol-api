@@ -492,6 +492,26 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   session = null;
   eq('signed out: refused', (await call('GET', null, { view: 'recent' })).status, 401);
 
+  /* 12 — Unknown (Troy, 2026-10-22): a hit and run found after the fact */
+  session = S('Employee', 'Patroller', 'Tom Gibson');
+  reset();
+  r = await call('POST', { ...BASE_MVA, hitRun: true, injuries: true, vehicles: 2, unknown: ['injuries', 'fatality', 'vehicles', 'blocked', 'nonsense'] });
+  eq('unknown: filed', r.status, 200);
+  const uf = DB[r.json.row.id].fields;
+  eq('Unknown at Scene lists only the questions that may be unknown, in order', uf.fldp2mql8SRymh6dC, 'Injuries, Fatality, Vehicles involved');
+  eq('…an Unknown question is never ticked, even if the body says true', [uf.fldoXOkzROQBIRo4d, uf.fld2h81Yn4jpfQUAz], [false, false]);
+  ok('…and no vehicle count is stored', !('fldiz7z6SHfSHlu0V' in uf));
+  eq('…hit & run (answered) is still ticked', uf.fldWIW6ejsJGjrMCM, true);
+  eq('the row reads it back', r.json.row.unknown, ['injuries', 'fatality', 'vehicles']);
+  const um = mails[0] || {};
+  ok('the email flags Fatality unknown and Injuries unknown', /Fatality unknown/.test(um.html) && /Injuries unknown/.test(um.html), (um.html || '').slice(0, 300));
+  ok('…Vehicles involved: Unknown', /Vehicles involved<\/td>\s*<td[^>]*>Unknown</.test(um.html));
+  ok('…in the red (serious) banner', /#FBEBEB/.test(um.html));
+  eq('…subject leads with the first flag', um.subject, 'MVA 2026-10-06-303.000-EB — Fatality unknown');
+  reset();
+  r = await call('POST', BASE_MVA);
+  ok('no unknowns: the field is not written', !('fldp2mql8SRymh6dC' in DB[r.json.row.id].fields) && JSON.stringify(r.json.row.unknown) === '[]');
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
