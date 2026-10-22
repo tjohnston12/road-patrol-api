@@ -95,6 +95,9 @@ const F = {
   markingsDmt:          'fldJPXDJaAJNNrqKS', markingsMultiple:     'fldzUpasE5bNEsat9',
   reflectivityDmt:      'fldzvk8fuGWib35Ap', reflectivityMultiple: 'fldH1bxu0oritgHst',
   etStickersDmt:        'fldSVU2AHPVH0mYBv', etStickersMultiple:   'fldP5tCAUYr1ARRJ0',
+  // "Deficiencies found" under an inspection check — added 2026-10-22 (see FOUND below).
+  illuminationFound:    'fldvCDQLM1LUBQnHG', markingsFound:        'fldvEX2GJ1VMwkfv7',
+  reflectivityFound:    'fldnIZPbkwmCuB13B', etStickersFound:      'fld2qfrZG2EPBkD32',
 };
 
 /* ── shift-check follow-ups (Troy, 2026-10-20) ────────────────────────────────
@@ -108,12 +111,17 @@ const F = {
 const FOLLOW = {
   deficiencies: [['deficienciesDmt', 'Entered into DMT'], ['deficienciesMultiple', 'More than one entry']],
   advisory:     [['advisoryIssued', 'Issued'], ['advisoryLifted', 'Lifted']],
-  illumination: [['illuminationDmt', 'Entered into DMT'], ['illuminationMultiple', 'More than one entry']],
-  markings:     [['markingsDmt', 'Entered into DMT'], ['markingsMultiple', 'More than one entry']],
-  reflectivity: [['reflectivityDmt', 'Entered into DMT'], ['reflectivityMultiple', 'More than one entry']],
-  etStickers:   [['etStickersDmt', 'Entered into DMT'], ['etStickersMultiple', 'More than one entry']],
+  illumination: [['illuminationFound', 'Deficiencies found'], ['illuminationDmt', 'Entered into DMT'], ['illuminationMultiple', 'More than one entry']],
+  markings:     [['markingsFound', 'Deficiencies found'], ['markingsDmt', 'Entered into DMT'], ['markingsMultiple', 'More than one entry']],
+  reflectivity: [['reflectivityFound', 'Deficiencies found'], ['reflectivityDmt', 'Entered into DMT'], ['reflectivityMultiple', 'More than one entry']],
+  etStickers:   [['etStickersFound', 'Deficiencies found'], ['etStickersDmt', 'Entered into DMT'], ['etStickersMultiple', 'More than one entry']],
 };
 const FOLLOW_KEYS = Object.values(FOLLOW).flat().map(([k]) => k);
+/* Troy, 2026-10-22: "on a night patrol if the patroller says yes to illumination, it assumes
+   deficiencies, can you have a check box for deficiencies found, then have the dmt entry question".
+   The four inspection checks: Yes → "Deficiencies found" → only then Entered into DMT / More than
+   one entry. Deficiencies found sent as false clears the two DMT ticks. */
+const FOUND = { illumination: 'illuminationFound', markings: 'markingsFound', reflectivity: 'reflectivityFound', etStickers: 'etStickersFound' };
 
 /* ── deficiencies raised from the shift report ───────────────────────────────
    Troy's numbers: 404 work orders sourced "Road patrol" in 90 days, roughly one
@@ -445,8 +453,10 @@ function toFields(b) {
      summer report never writes its two. */
   for (const [check, items] of Object.entries(FOLLOW)) {
     if (check === 'advisory' && !winter) continue;
+    const found = FOUND[check];
     for (const [k] of items) {
       if (b[check] === false) f[F[k]] = false;
+      else if (found && k !== found && b[found] === false) f[F[k]] = false;   // no deficiencies found → no DMT ticks
       else cb(F[k], b[k]);
     }
   }
@@ -1113,6 +1123,6 @@ module.exports.__test = {
   // section 7 — the deficiencies raised from the report
   F, cleanDef, cleanDefs, parseDefs, mergeDefs, defReady, deficiencyId,
   toFields, shape, raiseDeficiencies, MAX_DEFS, MAX_DESC, MAX_PHOTOS,
-  FOLLOW, FOLLOW_KEYS, reportHtml,
+  FOLLOW, FOLLOW_KEYS, FOUND, reportHtml,
   PHOTO_URL, DMT_INTAKE_URL,
 };
