@@ -365,6 +365,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('…and the list', r.json.rows.find(x => x.id === mid).sceneClearSent, true);
   r = await P('submit');
   eq('every item ticked but no photos: still 409', [r.status, (r.json.missing || []).length], [409, 2]);
+  // Troy, 2026-10-23: the accident report's "I did not get photos" lifts the accident-photo check; repairs stay.
+  AR_RECS = [{ id: 'recAR0', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldYe5TNVP902IMdM: true } }];
+  r = await P('submit');
+  eq('"I did not get photos" on the report: only the repair photo is still missing', [r.status, r.json.missing], [409, ['Photos of the completed repairs (at least one)']]);
+  AR_RECS = [];
   await call('POST', { action: 'folderFile', id: mid, item: 'Accident photos and damages', data: 'eA==', filename: 'scene.jpg', contentType: 'image/jpeg' });
   r = await P('submit');
   ok('an accident photo but no repair photo: still 409', r.status === 409 && /completed repairs/.test(r.json.error) && !/accident and damages/.test(r.json.error));

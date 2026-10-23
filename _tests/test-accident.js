@@ -373,6 +373,19 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
   eq('a report from before the list: its one person becomes the first row', r.json.report.tcCrew.map(x => [x.name, x.unit]), [['Old Single', 'U-1']]);
   ok('GET carries the equipment kinds and the people / unit lists', Array.isArray(r.json.choices.equipKinds) && r.json.tc && Array.isArray(r.json.tc.people) && Array.isArray(r.json.tc.units));
 
+  /* Troy, 2026-10-23: "I did not get photos" lifts step 2; items used at the scene is required. */
+  {
+    const nm = seedMva({ flddJ5v5jZ9rv4VWg: '2026-10-06-320.000-EB' });
+    r = await call('POST', { mva: nm, report: Object.assign({}, FULL, { hitRun: false }), submit: true });
+    ok('no items: "Items used at the scene (or None)" is needed', r.status === 400 && r.json.missing.includes('Items used at the scene (or None)'), JSON.stringify(r.json.missing));
+    r = await call('POST', { mva: nm, report: Object.assign({}, FULL, { hitRun: false, items: ['None'], noPhotos: true }), submit: true });
+    eq('"None" counts, and "I did not get photos" lifts every step 2 photo: it submits', [r.status, r.json.report && r.json.report.status, r.json.report && r.json.report.noPhotos], [200, 'Submitted', true]);
+    eq('…stored in No Photos Taken', Object.values(DB[T.ar]).find(x => x.fields.fldK8gqs6PfZAXNs9 === '2026-10-06-320.000-EB-AR').fields.fldYe5TNVP902IMdM, true);
+    const L = require(path.join(__dirname, '..', 'api', 'accident.js')).lib;
+    eq('typed "Other items used" counts too', L.missingFor(Object.assign({}, FULL, { items: [], itemsText: '6 cones', noPhotos: true }), {}), []);
+    eq('without the box the photos are still needed', L.photosMissing({ hitRun: false, photos: {} }, {}).length, 4);
+  }
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-accident: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
