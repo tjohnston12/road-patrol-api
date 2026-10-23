@@ -27,11 +27,16 @@
 // is shown as in progress, not met — the day is not over for it yet.
 //
 //   GET ?from=YYYY-MM-DD&to=YYYY-MM-DD    supervisors/admins only (isAdmin), ≤ 93 days
+//   GET ?view=stats&from=…&to=…           patroller stats (_stats.js) — anyone signed in to
+//                                         Patrol (Troy, 2026-10-23: "nothing private, everyone
+//                                         can see"), ≤ 366 days. Here, not a new file: the
+//                                         project is at Vercel Hobby's 12-function limit.
 //
 // Read only. Nothing here writes.
 
 const L = require('./_lib');
-const { requireAdmin } = require('./_auth');
+const { requireAdmin, requireCaller } = require('./_auth');
+const STATS = require('./_stats');   // ?view=stats — patroller stats, everyone signed in (2026-10-23)
 
 const BASE  = process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe';
 const TABLE = process.env.PATROL_TABLE  || 'tblosu2dzKTwhuHnf';
@@ -163,6 +168,12 @@ async function fetchReports(from, to) {
 
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
+  if ((req.query || {}).view === 'stats') {
+    const who = await requireCaller(req, res);
+    if (!who) return;
+    try { return await STATS.handle(req, res); }
+    catch (e) { console.error('[stats]', e.message); return res.status(500).json({ error: 'Could not build the patroller stats', detail: e.message }); }
+  }
   const caller = await requireAdmin(req, res, 'Patrol coverage is for supervisors and administrators.');
   if (!caller) return;
   try {
