@@ -817,7 +817,7 @@ module.exports = async function handler(req, res) {
 
 // ── The route: submit → verify → approve → filed → paid; send back at any step ──
 const T_AR = process.env.MVA_AR_TABLE || 'tblShwnpWGogKaZxG';
-const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repair: 'fldmEpRePHQOxRBkv',
+const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repair: 'fldmEpRePHQOxRBkv', noPhotos: 'fldYe5TNVP902IMdM',
   licence: 'fld3jQnLxu5n5ggO2', plate: 'fld6VmNkhtBnI9H1K', trailer: 'fldWb06wd1RE8uuiq', insurance: 'fldgtdy42gUHjO4We' };
 const isImg = a => /^image\//.test(a.type || '') || /\.(jpe?g|png|webp|heic|gif)$/i.test(a.filename || '');
 // Every photo in the file, in one place — "Photos are of the utmost importance for
@@ -826,6 +826,7 @@ const T_VEH = process.env.MVA_VEH_TABLE || 'tblpMfPIXMJhFmuuw';
 const VEH = { n: 'fldCOloDspNrByuT7', licence: 'fld8jYrCXrGqsSm9N', plate: 'fldl5T1V1XHzV5USf', trailer: 'fldQWeXpFVddoF5FS', insurance: 'fld3RVNUJQDkjFxpi' };
 async function photosFor(row) {
   const out = [];
+  let noPhotos = false;
   const add = (src, list) => arr(list).forEach(a => out.push({ source: src, id: a.id, url: a.url, filename: a.filename || '',
     thumb: a.thumbnails?.large?.url || a.thumbnails?.small?.url || a.thumb || '' }));
   add('MVA notification', row.photos);
@@ -834,6 +835,7 @@ async function photosFor(row) {
     qs.set('filterByFormula', `{Report No.}='${String(row.mvaNo + '-AR').replace(/'/g, "\\'")}'`);
     const ar = ((await airtable(`${BASE}/${T_AR}?${qs}`)).records || [])[0];
     if (ar) { const f = ar.fields || {};
+      noPhotos = !!f[AR.noPhotos];      // the accident report's "I did not get photos" (2026-10-23)
       add('Accident report — accident', f[AR.accident]); add('Accident report — repairs', f[AR.repair]);
       add('Driver\'s licence', f[AR.licence]); add('Licence plate', f[AR.plate]); add('Trailer plate', f[AR.trailer]); add('Insurance card', f[AR.insurance]);
       // Vehicles 2, 3… (Accident Vehicles, api/accident.js) — their own licence / plate / card.
@@ -849,7 +851,7 @@ async function photosFor(row) {
   }
   const count = s => out.filter(p => s.test(p.source)).length;
   return { list: out, accident: count(/^(MVA notification|Accident report — accident|Folder — Accident photos)/),
-           repair: count(/^(Accident report — repairs|Folder — Photos of the completed repairs)/), total: out.length };
+           repair: count(/^(Accident report — repairs|Folder — Photos of the completed repairs)/), total: out.length, noPhotos };
 }
 const stamp = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).replace(',', '');
@@ -905,7 +907,7 @@ async function step(row, body, caller, ctx, res) {
     const v = folderView(row, await folderRows(row.mvaNo));
     const missing = v.items.filter(i => !i.done).map(i => i.item);
     const ph = await photosFor(row);
-    if (!ph.accident) missing.push('Photos of the accident and damages (at least one)');
+    if (!ph.accident && !ph.noPhotos) missing.push('Photos of the accident and damages (at least one)');
     if (!ph.repair) missing.push('Photos of the completed repairs (at least one)');
     if (!(await sceneClearsFor(row.mvaNo)).length) missing.push('Scene clear (send it from the MVA)');
     if (missing.length) return res.status(409).json({ error: 'Not ready to submit: ' + missing.join(', '), missing });

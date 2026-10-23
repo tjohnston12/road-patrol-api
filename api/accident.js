@@ -70,6 +70,8 @@ const A = {
   injuries3: 'fldWdeQqgXx7ycBmo', fatality3: 'fld0XMlrjJ5atFqoH',
   officialWeather: 'fldMXyqLpqpBMpAjR', officialWeatherStation: 'fldOwrXAOQ3iqRVhh', officialWeatherAt: 'fldo6kZHO0YUtsyFV', officialWeatherUrl: 'fldObWVGNF4TdevJj',
   hasTrailer: 'fldnwBKWP05K43yPx', trailerPlatePhoto: 'fldWb06wd1RE8uuiq', trailerPlate: 'fldj44y9MXHrp42Nz',
+  // Troy, 2026-10-23: "photos in step two have a check box that says i did not get photos and make them not required".
+  noPhotos: 'fldYe5TNVP902IMdM',
 };
 // Vehicles 2…10 (Accident Vehicles). Vehicle 1 is the report row (A above).
 const T_VEH = process.env.MVA_VEH_TABLE || 'tblpMfPIXMJhFmuuw';
@@ -93,7 +95,7 @@ const CHOICES = {
 const TEXT = ['truck', 'tcEmployee', 'tcUnit', 'tcMoreText', 'roadCond', 'weather', 'damages', 'itemsText', 'driver', 'owner',
   'trucking', 'licence', 'vehicle', 'plate', 'insurer', 'policy', 'dmtWo', 'patroller', 'hitRunDetails', 'officer', 'policeFile',
   'towing', 'doeDetails', 'fireDetails', 'trailerPlate'];
-const BOOL = ['hasTrailer', 'tcByMrdc', 'tcMoreNeeded', 'driverIsOwner', 'dmtOpened', 'hitRun', 'ambulance', 'police', 'spill', 'fire', 'doeContacted'];
+const BOOL = ['hasTrailer', 'tcByMrdc', 'tcMoreNeeded', 'driverIsOwner', 'dmtOpened', 'hitRun', 'ambulance', 'police', 'spill', 'fire', 'doeContacted', 'noPhotos'];
 const TIMES = ['timeOfAccident', 'arrived', 'left', 'tcCalled', 'tcArrived', 'tcLeft'];
 const PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', trailer: 'trailerPlatePhoto', insurance: 'insurancePhoto', accident: 'accidentPhotos', repair: 'repairPhotos' };
 // Submit needs these (the DeviceMagic form's required set, plus the two Yes/No/Unknown).
@@ -319,6 +321,7 @@ const wxFields = w => ({ [A.officialWeather]: w.text, [A.officialWeatherStation]
 // One set per vehicle involved: "# of vehicles involved" (at least 1, at most 10).
 function vehicleCount(r) { const n = parseInt(r.vehicles, 10); return Math.min(MAX_VEHICLES, Math.max(1, isNaN(n) ? 1 : n)); }
 function photosMissing(r, mva) {
+  if (r.noPhotos) return [];          // "I did not get photos" (2026-10-23): none of step 2 is required
   const p = r.photos || {}, out = [];
   if (!(p.accident || []).length && !((mva && mva.photos) || []).length) out.push('Photos of the accident and damages');
   if (r.hitRun) return out;
@@ -375,7 +378,10 @@ async function truckChoices() {
     description: [u.make && u.model && u.model.toLowerCase().startsWith(u.make.toLowerCase()) ? u.model : [u.make, u.model].filter(Boolean).join(' '), u.designation].filter(Boolean).join(' · ') }));
 }
 
-function missingFor(r, mva) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label).concat(photosMissing(r, mva)); }
+/* Troy, 2026-10-23: "make items used at scene required" — a tick in Items used by MRDC (None counts)
+   or something typed in Other items used. */
+const itemsMissing = r => (arr(r.items).length || String(r.itemsText || '').trim()) ? [] : ['Items used at the scene (or None)'];
+function missingFor(r, mva) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label).concat(itemsMissing(r), photosMissing(r, mva)); }
 
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
