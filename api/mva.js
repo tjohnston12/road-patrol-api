@@ -23,6 +23,7 @@
 //      app still works — the notification is recorded and simply not emailed.
 
 const L = require('./_lib');
+const DL = require('./_dmt-link');
 const { requireCaller, getCaller } = require('./_auth');
 const C = require('./_conditions');   // the Patrol Notifications switch (Off / Owner test / Everyone)
 
@@ -640,7 +641,9 @@ module.exports = async function handler(req, res) {
         const notification = { html: notificationHtml(row), sentTo: row.notified || '', sentAt: row.notifiedAt || '', subject: subjectFor(row) };
         let sceneClear = { sent: false };
         try { sceneClear = sceneView(await sceneClearsFor(row.mvaNo)); } catch (_) { sceneClear = { sent: false, unknown: true }; }
-        return res.status(200).json({ row, notification, sceneClear, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
+        // The DMT work order on the file: status and a link (2026-10-27). Never fatal.
+        const dmt = await DL.ensure(row.dmtWo, row.mvaNo, row.id, caller.name || '');
+        return res.status(200).json({ row, notification, sceneClear, dmt, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
           photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
       }
       // Anyone on the file's route (a manager of someone, the approver, the claims
@@ -794,7 +797,7 @@ module.exports = async function handler(req, res) {
       // changes are a supervisor action.
       if (body.dmtWo !== undefined) {
         if (!canEdit(own)) return res.status(409).json({ error: 'The accident file has been submitted — it can only be changed if it is sent back.' });
-        f[F.dmtWo] = body.dmtWo;
+        f[F.dmtWo] = String(body.dmtWo == null ? '' : body.dmtWo).trim().slice(0, 60);
       }
       if (body.status !== undefined) {
         if (!caller.isAdmin) return res.status(403).json({ error: 'Only supervisors and administrators can change the status.' });
@@ -805,7 +808,17 @@ module.exports = async function handler(req, res) {
         method: 'PATCH', body: JSON.stringify({ fields: f, returnFieldsByFieldId: true }),
       });
       const out = shape(updated); out.access = own.access; out.verifier = own.verifier;
-      return res.status(200).json({ row: out });
+      // Troy, 2026-10-27: one DMT number for the file — the accident report's box follows, and
+      // the DMT work order is told which MVA it is for (_dmt-link.js). Only when it changed.
+      let dmt = null;
+      const before = String(own.dmtWo || '').trim(), after = String(out.dmtWo || '').trim();
+      if (body.dmtWo !== undefined && before !== after) {
+        try { await syncReportDmt(own.mvaNo, after); } catch (e) { console.warn('mva: accident report DMT number:', e.message); }
+        dmt = (DL.normWo(after) || DL.normWo(before))
+          ? await DL.link({ wo: after, prevWo: before, mvaNo: own.mvaNo, mvaId: own.id, by: caller.name || '' })
+          : { found: false, reason: after ? 'not a work order number' : 'blank' };
+      }
+      return res.status(200).json(Object.assign({ row: out }, dmt ? { dmt } : {}));
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -819,6 +832,21 @@ module.exports = async function handler(req, res) {
 const T_AR = process.env.MVA_AR_TABLE || 'tblShwnpWGogKaZxG';
 const AR = { reportNo: 'fldK8gqs6PfZAXNs9', accident: 'fldZpLjNw1PIiS6Cj', repair: 'fldmEpRePHQOxRBkv', noPhotos: 'fldYe5TNVP902IMdM',
   licence: 'fld3jQnLxu5n5ggO2', plate: 'fld6VmNkhtBnI9H1K', trailer: 'fldWb06wd1RE8uuiq', insurance: 'fldgtdy42gUHjO4We' };
+AR.dmtWo = 'fldYCrKMg0Jc3HIR5'; AR.dmtOpened = 'fldwNrqoRF9MMcNcE';
+// The accident report's DMT box follows the folder's number (only if there is a report yet).
+async function syncReportDmt(mvaNo, wo) {
+  const qs = new URLSearchParams();
+  qs.set('returnFieldsByFieldId', 'true'); qs.set('maxRecords', '1');
+  qs.set('filterByFormula', `{Report No.}='${String(mvaNo + '-AR').replace(/'/g, "\\'")}'`);
+  const j = await airtable(`${BASE}/${T_AR}?${qs}`);
+  const rec = (j.records || [])[0];
+  if (!rec) return false;
+  const f = rec.fields || {};
+  if (String(f[AR.dmtWo] || '').trim() === wo && (!wo || f[AR.dmtOpened])) return false;
+  await airtable(`${BASE}/${T_AR}/${rec.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true,
+    fields: Object.assign({ [AR.dmtWo]: wo }, wo ? { [AR.dmtOpened]: true } : {}) }) });
+  return true;
+}
 const isImg = a => /^image\//.test(a.type || '') || /\.(jpe?g|png|webp|heic|gif)$/i.test(a.filename || '');
 // Every photo in the file, in one place — "Photos are of the utmost importance for
 // claims to be processed quickly with insurance companies" (Troy).

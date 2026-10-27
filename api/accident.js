@@ -42,6 +42,7 @@
 const L = require('./_lib');
 const { requireCaller } = require('./_auth');
 const M = require('./mva').lib;
+const DL = require('./_dmt-link');
 const { arr, sel, airtable } = L;
 
 const T_AR = process.env.MVA_AR_TABLE || 'tblShwnpWGogKaZxG';
@@ -235,6 +236,22 @@ async function patch(id, fields) {
   // typecast: Route 1 and Route 8 join the Accident Reports Route select on first use (2026-10-08).
   return airtable(`${M.BASE}/${T_AR}/${id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, typecast: true, fields }) });
 }
+/* The DMT number the report stands for: the box only counts when "DMT work order opened?" is Yes. */
+const effWo = rep => (rep && rep.dmtOpened !== false && String(rep.dmtWo || '').trim()) ? String(rep.dmtWo).trim() : '';
+/* Troy, 2026-10-27: the DMT number typed here is the MVA folder's number too, and the DMT
+   work order is told which MVA it is for (_dmt-link.js). Only when the number changed. */
+async function syncDmt(mva, before, after, caller) {
+  if (before === after) return null;
+  if (String(mva.dmtWo || '').trim() !== after) {
+    try {
+      await airtable(`${M.BASE}/${encodeURIComponent(M.TABLE)}/${encodeURIComponent(mva.id)}`, { method: 'PATCH',
+        body: JSON.stringify({ returnFieldsByFieldId: true, fields: { [M.F.dmtWo]: after } }) });
+      mva.dmtWo = after;
+    } catch (e) { console.warn('accident: MVA DMT number:', e.message); }
+  }
+  if (!DL.normWo(after) && !DL.normWo(before)) return { found: false, reason: after ? 'not a work order number' : 'blank' };
+  return DL.link({ wo: after, prevWo: before, mvaNo: mva.mvaNo, mvaId: mva.id, by: caller.name || '' });
+}
 // Tick a folder item done (MVA File Folder), as the folder page does.
 function tick(caller, now) {
   const FF = M.FF, who = caller.name || '';
@@ -401,7 +418,17 @@ module.exports = async function handler(req, res) {
       let investigation = null;
       try { const IVL = require('./mva-forms').lib; investigation = IVL.shapeIV(await IVL.findIV(mva)); }
       catch (e) { console.warn('accident: investigation lookup:', e.message); }
-      return res.status(200).json({ mva, investigation, report: withVehicles(shapeAR(found), await vehicleRows(found)), choices: Object.assign({}, CHOICES, { equipKinds: EQUIP_KINDS }),
+      // The DMT work order the report names: its status, and a link (2026-10-27). Never fatal.
+      const rep0 = shapeAR(found);
+      const woNow = effWo(rep0) || (rep0 ? '' : String(mva.dmtWo || '').trim());
+      const dmt = await DL.ensure(woNow, mva.mvaNo, mva.id, caller.name || '');
+      // A report saved before the two were kept in step: the folder takes the report's number.
+      if (rep0 && woNow && DL.normWo(woNow) && !String(mva.dmtWo || '').trim()) {
+        try { await airtable(`${M.BASE}/${encodeURIComponent(M.TABLE)}/${encodeURIComponent(mva.id)}`, { method: 'PATCH',
+          body: JSON.stringify({ returnFieldsByFieldId: true, fields: { [M.F.dmtWo]: woNow } }) }); mva.dmtWo = woNow; }
+        catch (e) { console.warn('accident: MVA DMT number:', e.message); }
+      }
+      return res.status(200).json({ mva, investigation, dmt, report: withVehicles(rep0, await vehicleRows(found)), choices: Object.assign({}, CHOICES, { equipKinds: EQUIP_KINDS }),
         admin: !!caller.isAdmin, canEdit: M.canEdit(mva), truck: { fleet, fromReport },
         tc: { people: people.filter(p => p.active).map(p => p.name).sort(), units: units.map(u => ({ unit: u.unit, description: BD.describeUnit(u), depot: u.depot })) } });
     }
@@ -418,7 +445,7 @@ module.exports = async function handler(req, res) {
     const now = new Date().toISOString();
     let rec = await ensureReport(mva, caller);
     const rows = await vehicleRows(rec);
-    let note = '';
+    let note = '', dmt = null;
     // Which vehicle a photo is for: absent / 1 = the report row, 2…10 = Accident Vehicles.
     const vn = body.vehicle == null || +body.vehicle === 1 ? 1 : vehN(body.vehicle);
     if ((body.action === 'photo' || body.action === 'photoRemove') && !vn) return res.status(400).json({ error: 'Unknown vehicle' });
@@ -455,6 +482,7 @@ module.exports = async function handler(req, res) {
       const keep = arr((rec.fields || {})[A[key]]).filter(a => a.id !== body.fileId).map(a => ({ id: a.id }));
       rec = await patch(rec.id, { [A[key]]: keep });
     } else {
+      const woBefore = effWo(shapeAR(rec));
       const f = body.report ? toFields(body.report) : {};
       if (body.repairs) {
         if (body.repairs.date !== undefined) f[A.repairDate] = /^\d{4}-\d{2}-\d{2}$/.test(String(body.repairs.date)) ? body.repairs.date : null;
@@ -463,6 +491,7 @@ module.exports = async function handler(req, res) {
       if (Object.keys(f).length) rec = await patch(rec.id, f);
       if (body.report && body.report.extraVehicles !== undefined) await saveVehicles(rec, rows, body.report.extraVehicles);
       const cur = withVehicles(shapeAR(rec), rows);
+      if (body.report) dmt = await syncDmt(mva, woBefore, effWo(cur), caller);
       if (body.submit) {
         const missing = missingFor(cur, mva);
         if (missing.length) return res.status(400).json({ error: 'Still needed: ' + missing.join(', '), missing, report: cur });
@@ -483,10 +512,10 @@ module.exports = async function handler(req, res) {
         note = 'repairs';
       }
     }
-    return res.status(200).json({ mva, report: withVehicles(shapeAR(rec), rows), saved: note || 'saved' });
+    return res.status(200).json(Object.assign({ mva, report: withVehicles(shapeAR(rec), rows), saved: note || 'saved' }, dmt ? { dmt } : {}));
   } catch (e) {
     console.error('accident error:', e);
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports.lib = { officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount, pickReport, truckFromReport, truckChoices, dayBefore, cleanCrew, cleanEquip, EQUIP_KINDS };
+module.exports.lib = { effWo, officialWeather, parseGps, A, V, CHOICES, REQUIRED, toFields, shapeAR, missingFor, photosMissing, vehicleCount, pickReport, truckFromReport, truckChoices, dayBefore, cleanCrew, cleanEquip, EQUIP_KINDS };
