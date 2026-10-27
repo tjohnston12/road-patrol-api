@@ -386,6 +386,70 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
     eq('without the box the photos are still needed', L.photosMissing({ hitRun: false, photos: {} }, {}).length, 4);
   }
 
+
+  /* Troy, 2026-10-27: "if they type the dmt number into the accident report can you link them
+     back that way and attach them?" — the MVA folder gets the same number, and the DMT is told. */
+  {
+    const prevFetch = global.fetch, DMT = [];
+    let dmtDown = false, LINKED = '';
+    global.fetch = async (url, opt) => {
+      if (String(url).includes('dmt.mrdc-htra.com/api/intake')) {
+        const b = JSON.parse(opt.body); DMT.push({ key: opt.headers['x-intake-key'], body: b });
+        if (dmtDown) throw new Error('ECONNRESET');
+        if (!b.peek && b.wo === 'WO-2026-0047' && b.mva) LINKED = b.mva;
+        if (!b.peek && b.unlinkWo === 'WO-2026-0047' && b.wo !== 'WO-2026-0047') LINKED = '';
+        const wo = b.wo === 'WO-2026-0047' ? { found: true, workOrder: 'WO-2026-0047', status: 'New', priority: 'High', linkedMva: LINKED, url: 'https://dmt.mrdc-htra.com/?wo=WO-2026-0047' }
+                                          : { found: false, reason: 'no such work order' };
+        return { ok: true, status: 200, json: async () => Object.assign({ ok: true }, wo, b.peek ? {} : (wo.found ? { linked: true } : {})) };
+      }
+      return prevFetch(url, opt);
+    };
+    process.env.DMT_INTAKE_SECRET = 'svc-key';
+    const dm = seedMva({ flddJ5v5jZ9rv4VWg: '2026-10-22-427.200-EB' });
+    const mvaF = () => DB[T.mva][dm].fields.fldh1qB5gUhhPlrxS;
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: ' WO-2026-0047 ' } });
+    eq('typing the DMT number links it: the MVA folder gets the number', [r.status, mvaF()], [200, 'WO-2026-0047']);
+    const ln = DMT.filter(x => !x.body.peek).pop();
+    eq('…and the DMT is told which MVA, with the service key', [ln.key, ln.body.action, ln.body.wo, ln.body.mva, ln.body.mvaId, ln.body.by],
+      ['svc-key', 'link-mva', 'WO-2026-0047', '2026-10-22-427.200-EB', dm, 'Tom Gibson']);
+    eq('…the page hears back what it found', [r.json.dmt.found, r.json.dmt.status, r.json.dmt.linked], [true, 'New', true]);
+    let n = DMT.length;
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: 'WO-2026-0047', policy: 'P-1' } });
+    eq('saving again with the same number does not call the DMT', [DMT.length, r.json.dmt], [n, undefined]);
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: 'WO-2026-9999' } });
+    const ch = DMT.pop().body;
+    eq('a changed number: the old one is let go, the new one tried', [ch.wo, ch.unlinkWo, r.json.dmt.found, r.json.dmt.reason, mvaF()], ['WO-2026-9999', 'WO-2026-0047', false, 'no such work order', 'WO-2026-9999']);
+    n = DMT.length;
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: 'Na' } });
+    eq('"Na" is not a number — the old one is still let go, the folder matches', [DMT.length, DMT[DMT.length - 1].body.unlinkWo, r.json.dmt.found, mvaF()], [n + 1, 'WO-2026-9999', false, 'Na']);
+    n = DMT.length;
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: 'n/a' } });
+    eq('from one non-number to another: nothing to tell the DMT', [DMT.length, r.json.dmt.reason, mvaF()], [n, 'not a work order number', 'n/a']);
+    dmtDown = true;
+    r = await call('POST', { mva: dm, report: { dmtOpened: true, dmtWo: 'WO-2026-0047' } });
+    eq('the DMT being down never stops the save', [r.status, r.json.report.dmtWo, mvaF(), r.json.dmt.found, r.json.dmt.checked], [200, 'WO-2026-0047', 'WO-2026-0047', false, false]);
+    dmtDown = false;
+    r = await call('POST', { mva: dm, report: { dmtOpened: false } });
+    eq('"No DMT work order" clears the folder number and lets the work order go', [mvaF(), DMT[DMT.length - 1].body.unlinkWo, DMT[DMT.length - 1].body.wo], ['', 'WO-2026-0047', '']);
+    r = await call('POST', { mva: dm, report: { dmtOpened: true } });
+    r = await call('GET', null, { mva: dm });
+    eq('opening the report shows the work order status', [r.json.dmt.found, r.json.dmt.status, DMT[DMT.length - 1].body.peek], [true, 'New', true]);
+    // A report saved before the link existed (or while the DMT was down): opening it links it, and the folder takes the number.
+    LINKED = ''; DB[T.mva][dm].fields.fldh1qB5gUhhPlrxS = '';
+    r = await call('GET', null, { mva: dm });
+    eq('opening an older report links it then', [DMT[DMT.length - 1].body.peek, DMT[DMT.length - 1].body.mva, LINKED, mvaF(), r.json.dmt.linked],
+      [undefined, '2026-10-22-427.200-EB', '2026-10-22-427.200-EB', 'WO-2026-0047', true]);
+    n = DMT.length; r = await call('GET', null, { mva: dm });
+    eq('…and only looks after that', [DMT.length, DMT[DMT.length - 1].body.peek], [n + 1, true]);
+    delete process.env.DMT_INTAKE_SECRET;
+    r = await call('GET', null, { mva: dm });
+    eq('no key configured: the page still opens, the DMT is just not asked', [r.status, r.json.dmt.checked], [200, false]);
+    const AL = require(path.join(__dirname, '..', 'api', '_dmt-link.js'));
+    eq('the numbers people type', ['WO-2026-0047', 'wo 2026 0047', '2026-0047', 'WO2026-0047', '113852156', 'WO-2026-004', 'Na', 'n/a', 'pending', ''].map(AL.normWo),
+      ['WO-2026-0047', 'WO-2026-0047', 'WO-2026-0047', 'WO-2026-0047', '113852156', 'WO-2026-004', '', '', '', '']);
+    global.fetch = prevFetch;
+  }
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-accident: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

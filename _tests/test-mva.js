@@ -52,6 +52,7 @@ function answer(rec, byId) {
   return { id: rec.id, createdTime: '2026-10-06T16:58:20.000Z', fields: out };
 }
 const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
+let AR_PATCHES = [];
 let SCENE_DB = [], FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_RECS = [];
 // The Employees directory and MVA File Roles, as the route reads them.
 let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
@@ -66,7 +67,10 @@ const airtable = async (p, opt = {}) => {
   if (table === 'tblUfWrGjHTHXszos') return { records: EMP.map((e, i) => ({ id: 'recE' + i, fields: { fldtLjh72SJV8Uyfb: e.name, fldBggHLMX7abWiSK: e.email,
     fldcHPqfxScpuUbZ6: { name: 'Active' }, fld06i7CJWbkIbCZA: e.manager || '' } })) };
   if (table === 'tblN3F3YU9lg0K6Fz') return { records: ROLES.map((r, i) => ({ id: 'recR' + i, fields: { fldR6WX7zZziNhIEH: r[0], fldcd2tacVtpOaA0P: r[1] } })) };
-  if (table === 'tblShwnpWGogKaZxG') return { records: AR_RECS };
+  if (table === 'tblShwnpWGogKaZxG') {
+    if (m === 'PATCH' && id) { const a = AR_RECS.find(x => x.id === id); Object.assign(a.fields, body.fields); AR_PATCHES.push(body.fields); return a; }
+    return { records: AR_RECS };
+  }
   if (table === 'tblpMfPIXMJhFmuuw') { const pre = ((url.searchParams.get('filterByFormula') || '').match(/^FIND\('(.*)',\{Vehicle Ref\}\)=1$/) || [])[1];
     return { records: VEH_RECS.filter(v => pre && v.fields.fldwfUp29kQs8NQI7.indexOf(pre) === 0) }; }
   if (table === 'tblExJGXFCqLKPU2V') {                                 // Scene Clear (2026-10-21: required on every MVA)
@@ -522,6 +526,54 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   reset();
   r = await call('POST', BASE_MVA);
   ok('no unknowns: the field is not written', !('fldp2mql8SRymh6dC' in DB[r.json.row.id].fields) && JSON.stringify(r.json.row.unknown) === '[]');
+
+
+  /* Troy, 2026-10-27: the folder's DMT number and the accident report's are one number, and
+     the DMT work order is told which MVA it is for. */
+  {
+    reset();
+    const DMT = []; let LINKED = '';
+    const prevFetch = global.fetch;
+    global.fetch = async (url, opt) => {
+      if (String(url).includes('dmt.mrdc-htra.com/api/intake')) {
+        const b = JSON.parse(opt.body); DMT.push(b);
+        const found = b.wo === 'WO-2026-0047';
+        if (found && !b.peek) LINKED = b.mva;
+        return { ok: true, status: 200, json: async () => ({ ok: true, found, workOrder: found ? b.wo : undefined, status: found ? 'In progress' : undefined, linkedMva: found ? LINKED : undefined, linked: found && !b.peek }) };
+      }
+      return prevFetch(url, opt);
+    };
+    process.env.DMT_INTAKE_SECRET = 'svc-key';
+    session = S('Employee', 'Patroller', 'Tom Gibson');
+    r = await call('POST', BASE_MVA);
+    const id = r.json.row.id, no = r.json.row.mvaNo;
+    AR_RECS = [{ id: 'recARx', fields: { fldK8gqs6PfZAXNs9: no + '-AR' } }]; AR_PATCHES = [];
+    r = await call('PATCH', { id, dmtWo: ' WO-2026-0047 ' });
+    eq('the folder number is saved trimmed', [r.status, r.json.row.dmtWo], [200, 'WO-2026-0047']);
+    eq('…the accident report box follows (and says a work order was opened)', [AR_RECS[0].fields.fldYCrKMg0Jc3HIR5, AR_RECS[0].fields.fldwNrqoRF9MMcNcE], ['WO-2026-0047', true]);
+    eq('…the DMT is told which MVA', [DMT[0].action, DMT[0].wo, DMT[0].mva, DMT[0].mvaId, DMT[0].by, DMT[0].unlinkWo], ['link-mva', 'WO-2026-0047', no, id, 'Tom Gibson', '']);
+    eq('…and the answer comes back to the page', [r.json.dmt.found, r.json.dmt.status], [true, 'In progress']);
+    const n = DMT.length, p = AR_PATCHES.length;
+    r = await call('PATCH', { id, dmtWo: 'WO-2026-0047' });
+    eq('the same number again: nothing more is written or asked', [DMT.length, AR_PATCHES.length, r.json.dmt], [n, p, undefined]);
+    r = await call('GET', null, { id });
+    eq('opening the file shows the work order status', [r.json.dmt.found, r.json.dmt.status, DMT[DMT.length - 1].peek], [true, 'In progress', true]);
+    LINKED = 'someone-else';
+    r = await call('GET', null, { id });
+    eq('a work order already naming another MVA is left alone on open', [DMT[DMT.length - 1].peek, LINKED], [true, 'someone-else']);
+    LINKED = '';
+    r = await call('GET', null, { id });
+    eq('…one naming none is linked on open', [DMT[DMT.length - 1].peek, LINKED, r.json.dmt.linked], [undefined, no, true]);
+    r = await call('PATCH', { id, dmtWo: 'Na' });
+    eq('"Na": the report follows, the old work order is let go', [AR_RECS[0].fields.fldYCrKMg0Jc3HIR5, DMT[DMT.length - 1].unlinkWo, r.json.dmt.found], ['Na', 'WO-2026-0047', false]);
+    r = await call('PATCH', { id, dmtWo: '' });
+    eq('cleared: the report box clears too', [AR_RECS[0].fields.fldYCrKMg0Jc3HIR5, r.json.dmt.reason], ['', 'blank']);
+    AR_RECS = [];
+    r = await call('PATCH', { id, dmtWo: 'WO-2026-0047' });
+    eq('no accident report yet: the folder still saves and links', [r.status, r.json.dmt.linked], [200, true]);
+    delete process.env.DMT_INTAKE_SECRET;
+    global.fetch = prevFetch;
+  }
 
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
