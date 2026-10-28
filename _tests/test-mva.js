@@ -575,6 +575,35 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
     global.fetch = prevFetch;
   }
 
+
+  /* Troy, 2026-10-28: the animal list matches the animals page; DNR call / burial on the MVA form */
+  {
+    reset(); session = S('Employee', 'Patroller', 'Tom Gibson');
+    const AF = { type: 'fldK4kaCURlAhHbf3', count: 'fldAsBgbvYvH0BFwZ', other: 'fldCmVjGvDyn9rtXu', dnrAt: 'fldMFn118di6EWP6G', dnrBy: 'fldYdjyzFXtgzJYaH',
+      remAt: 'fldNNJ2V1KM5Bx8HB', remBy: 'fldvp6pIfDw8gbyE1', closedBy: 'fldHNADf1Pu2JJS5U' };
+    r = await call('GET', null, { meta: '1' });
+    eq('the animal list: Deer, Moose, Bear, Bird of prey, Other', r.json.choices.animals, ['Deer', 'Moose', 'Bear', 'Bird of prey', 'Other']);
+    eq('…and the ones DNR removes', r.json.choices.animalsDnr, ['Deer', 'Moose', 'Bear', 'Bird of prey']);
+    r = await call('POST', Object.assign({}, BASE_MVA, { roadkill: true, animalType: 'Coyote', animalCount: 1 }));
+    ok('a species not on the list is refused', r.status === 400 && /pick the animal/.test(r.json.error), JSON.stringify(r.json));
+    r = await call('POST', Object.assign({}, BASE_MVA, { roadkill: true, animalType: 'Other', animalCount: 1 }));
+    ok('Other with no name is refused', r.status === 400 && /say what the animal was/.test(r.json.error));
+    r = await call('POST', Object.assign({}, BASE_MVA, { roadkill: true, animalType: 'Other', animalOther: ' Porcupine ', animalCount: 1 }));
+    let f = DB[r.json.row.id].fields;
+    eq('Other: what it was is kept; not closed, so it goes on the animals list', [r.status, f[AF.type], f[AF.other], f[AF.remAt], f[AF.dnrAt]], [200, 'Other', 'Porcupine', undefined, undefined]);
+    r = await call('POST', Object.assign({}, BASE_MVA, { km: 305, roadkill: true, animalType: 'Deer', animalCount: 2, animalClosedNow: true }));
+    f = DB[r.json.row.id].fields;
+    eq('a deer with "DNR already called": DNR called now, by the patroller, entered by them', [r.status, !!f[AF.dnrAt], f[AF.dnrBy], f[AF.closedBy], f[AF.remAt]],
+      [200, true, 'Tom Gibson', 'Tom Gibson', undefined]);
+    eq('…read back on the row', [r.json.row.animalDnrCalledBy, r.json.row.animalCount], ['Tom Gibson', 2]);
+    r = await call('POST', Object.assign({}, BASE_MVA, { km: 306, roadkill: true, animalType: 'Other', animalOther: 'Fox', animalCount: 1, animalClosedNow: true }));
+    f = DB[r.json.row.id].fields;
+    eq('another animal with "already buried": removed now, by the patroller', [!!f[AF.remAt], f[AF.remBy], f[AF.dnrAt]], [true, 'Tom Gibson', undefined]);
+    r = await call('POST', Object.assign({}, BASE_MVA, { km: 307, roadkill: false, animalType: 'Deer', animalClosedNow: true }));
+    f = DB[r.json.row.id].fields;
+    ok('no animal involved: nothing about an animal is written', r.status === 200 && f[AF.dnrAt] === undefined && f[AF.other] === undefined);
+  }
+
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\ntest-mva: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

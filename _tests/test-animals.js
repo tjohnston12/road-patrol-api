@@ -30,16 +30,18 @@ function reset(mode) {
           EMP('recE6', 'Tom Gibson', 'tom@x.ca', ['Patroller - Full Time'], true),
           EMP('recE7', 'Old Manager', 'old@x.ca', ['Area Manager'], false),
           EMP('recE8', 'No Mail', 'not-an-email', ['Area Manager'], true)],
-    dl: [] };
+    dl: [], mva: [] };
   CALLS = []; MAIL = []; seq = 0; MAIL_FAIL = false;
 }
-const T = { tbl8avT8C3tPbP8n4: 'an', tbltvyYslcnGUGndD: 'sw', tblUfWrGjHTHXszos: 'emp', tblGXm5nDaxGppjVj: 'dl' };
+let MVA_DOWN = false;
+const T = { tblFnoVfyA9nSEOwk: 'mva', tbl8avT8C3tPbP8n4: 'an', tbltvyYslcnGUGndD: 'sw', tblUfWrGjHTHXszos: 'emp', tblGXm5nDaxGppjVj: 'dl' };
 async function airtable(p, opts = {}) {
   const u = String(p), method = opts.method || 'GET';
   CALLS.push({ u, method, body: opts.body ? JSON.parse(opts.body) : null });
   const m = u.match(/^(app[A-Za-z0-9]+)\/([A-Za-z0-9%]+)(?:\/(rec[A-Za-z0-9]+))?/);
   const key = T[decodeURIComponent(m[2])];
   if (!key) throw new Error('table? ' + u);
+  if (key === 'mva' && MVA_DOWN) throw new Error('Airtable 503');
   const rows = DB[key];
   if (m[3]) {
     const r = rows.find(x => x.id === m[3]);
@@ -195,6 +197,65 @@ const KILL_SMALL = { kind: 'Road kill', species: 'Other', otherSpecies: 'Porcupi
   reset('Everyone'); MAIL_FAIL = true; session = S('Tom Gibson');
   r = await call('POST', {}, { ...SEEN, insideFence: true });
   ok('mail down: the sighting is still saved, and it says so', r.code === 201 && DB.an.length === 1 && /Saved, but the email did not go/.test(r.body.emailError || ''), JSON.stringify(r.body));
+
+
+  /* 6 — animals hit in an MVA (Troy, 2026-10-28): the DNR / burial step, the open list, the counts */
+  {
+    reset(); session = S('Tom Gibson');
+    const MF = require(path.join(__dirname, '..', 'api', 'mva.js')).lib.F;
+    const msrc = require('fs').readFileSync(path.join(__dirname, '..', 'api', 'mva.js'), 'utf8');
+    ok('the MVA form offers the same animals as this page, and the same DNR list',
+      msrc.includes("animals:    ['Deer', 'Moose', 'Bear', 'Bird of prey', 'Other']") && msrc.includes("animalsDnr: ['Deer', 'Moose', 'Bear', 'Bird of prey']"));
+    const hrs = h => new Date(Date.now() - h * 3600e3).toISOString();
+    // After the DNR step reached the MVA form, and in the past (closing checks "not before it was found").
+    const B = Math.max(Date.now() - 6 * 3600e3, Date.parse(require(path.join(__dirname, '..', 'api', 'animals.js')).__test.MVA_FROM) + 60e3);
+    const at = m => new Date(B + m * 60e3).toISOString();
+    const mva = (id, no, o) => DB.mva.push({ id, fields: Object.assign({ [MF.mvaNo]: no, [MF.roadkill]: true, [MF.route]: { name: 'Route 2' },
+      [MF.direction]: { name: 'WB' }, [MF.km]: 400, [MF.patroller]: 'Eugene Belyea', [MF.animalCount]: 1 }, o) });
+    mva('recMVADEERaaaaaaa', '2026-11-02-400.000-WB', { [MF.animalType]: { name: 'Deer' }, [MF.occurredAt]: at(120) });
+    mva('recMVAOTHERaaaaaa', '2026-11-02-401.000-WB', { [MF.animalType]: { name: 'Other' }, [MF.animalOther]: 'Porcupine', [MF.occurredAt]: at(0) });
+    mva('recMVAFOXaaaaaaaa', '2026-11-01-402.000-WB', { [MF.animalType]: { name: 'Fox' }, [MF.occurredAt]: at(0),
+      [MF.animalRemovedAt]: at(30), [MF.animalRemovedBy]: 'Eugene Belyea' });
+    mva('recMVAOLDaaaaaaaa', '2026-10-18-400.000-WB', { [MF.animalType]: { name: 'Deer' }, [MF.occurredAt]: '2026-10-18T13:45:00.000Z' });
+    mva('recMVANOANIMALaaa', '2026-11-02-410.000-EB', { [MF.roadkill]: false, [MF.occurredAt]: hrs(2) });
+    let r = await call('GET', {});
+    const ids = a => a.map(x => x.id);
+    eq('open: the deer and the porcupine from MVAs, oldest first; not the buried fox, the old MVA, or an MVA with no animal',
+      ids(r.body.open), ['recMVAOTHERaaaaaa', 'recMVADEERaaaaaaa']);
+    const d = r.body.open.find(a => a.id === 'recMVADEERaaaaaaa');
+    eq('…marked as from the MVA, road kill, DNR to call, 24 h from the time of the MVA',
+      [d.source, d.mvaNo, d.reportId, d.kind, d.needsDnr, d.reportedBy, new Date(d.dueAt) - new Date(d.observedAt)],
+      ['MVA', '2026-11-02-400.000-WB', 'MVA 2026-11-02-400.000-WB', 'Road kill', true, 'Eugene Belyea', 24 * 3600e3]);
+    const o = r.body.open.find(a => a.id === 'recMVAOTHERaaaaaa');
+    eq('…an Other says what it was, and is buried (no DNR)', [o.species, o.otherSpecies, o.needsDnr], ['Other', 'Porcupine', false]);
+    const fox = r.body.recent.find(a => a.id === 'recMVAFOXaaaaaaaa');
+    eq('a Fox from an older MVA counts as Other (fox), and shows as buried in recent', [fox && fox.species, fox && fox.otherSpecies, fox && fox.status], ['Other', 'Fox', 'Closed']);
+    const yr = r.body.counts.year, row = s => r.body.counts.rows.find(x => x.species === s).roadKill;
+    const expDeer = 1 + (String(yr) === '2026' ? 1 : 0);   // the new deer, and the 2026-10-18 one in 2026
+    eq('road kill counts include MVA animals (deer; porcupine and fox as Other)', [row('Deer'), row('Other')], [expDeer, 2]);
+    // close the deer from the open list
+    r = await call('POST', { id: 'recMVADEERaaaaaaa', action: 'close', source: 'mva' }, { by: 'Derek Melanson' });
+    const f = DB.mva.find(x => x.id === 'recMVADEERaaaaaaa').fields;
+    eq('closing an MVA animal writes the MVA: DNR called, by whom, entered by', [r.code, r.body.report.status, f[MF.animalDnrBy], !!f[MF.animalDnrAt], f[MF.animalClosedBy], f[MF.animalRemovedAt]],
+      [200, 'Closed', 'Derek Melanson', true, 'Tom Gibson', undefined]);
+    ok('…and nothing on the Animal Reports table', DB.an.length === 0);
+    r = await call('POST', { id: 'recMVADEERaaaaaaa', action: 'close', source: 'mva' }, {});
+    ok('closing it twice: 409, says who called DNR', r.code === 409 && /DNR called .* by Derek Melanson/.test(r.body.error), JSON.stringify(r.body));
+    r = await call('POST', { id: 'recMVAOTHERaaaaaa', action: 'close', source: 'mva' }, { by: 'Tom Gibson' });
+    eq('the porcupine: buried', [r.code, DB.mva.find(x => x.id === 'recMVAOTHERaaaaaa').fields[MF.animalRemovedBy]], [200, 'Tom Gibson']);
+    r = await call('POST', { id: 'recMVAOLDaaaaaaaa', action: 'close', source: 'mva' }, { by: 'Tom Gibson' });
+    ok('an MVA from before the DNR step: already closed, says so', r.code === 409 && /before the DNR step/.test(r.body.error));
+    r = await call('POST', { id: 'recMVANOANIMALaaa', action: 'close', source: 'mva' }, {});
+    eq('an MVA with no animal: 400', r.code, 400);
+    r = await call('GET', {});
+    eq('nothing left open', r.body.open.length, 0);
+    MVA_DOWN = true;
+    DB.an.push({ id: 'recANOPENaaaaaaaa', fields: { [F.kind]: { name: 'Road kill' }, [F.status]: { name: 'Open' }, [F.species]: { name: 'Deer' }, [F.observedAt]: hrs(1) } });
+    r = await call('GET', {});
+    ok('the MVA base down: the page still lists its own road kill, and says MVA animals could not be read',
+      r.code === 200 && r.body.open.length === 1 && /MVA animals could not be read/.test(r.body.mvaError || ''), JSON.stringify(r.body).slice(0, 300));
+    MVA_DOWN = false;
+  }
 
   console.log(failures.map(f => '   FAIL  ' + f).join('\n'));
   console.log(`\n  test-animals: ${pass} passed, ${fail} failed`);
