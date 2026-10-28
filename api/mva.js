@@ -73,6 +73,14 @@ const F = {
   roadkill:       'fld1bLiWFwhyUFs7p',
   animalType:     'fldK4kaCURlAhHbf3',
   animalCount:    'fldAsBgbvYvH0BFwZ',
+  // Troy, 2026-10-28: an animal hit in an MVA gets the same DNR call / burial step as road kill on the
+  // animals page, and counts in the road kill stats (animals.js reads these).
+  animalOther:     'fldCmVjGvDyn9rtXu',
+  animalDnrAt:     'fldMFn118di6EWP6G',
+  animalDnrBy:     'fldYdjyzFXtgzJYaH',
+  animalRemovedAt: 'fldNNJ2V1KM5Bx8HB',
+  animalRemovedBy: 'fldvp6pIfDw8gbyE1',
+  animalClosedBy:  'fldHNADf1Pu2JJS5U',
   photos:         'fldXN5USProy2fNVx',
   summary:        'fldQBjjZNYPVpUaaW',
   blockedDetails: 'fldDzE2ieyGMJvzHX', // Troy, 2026-10-08: highway blocked = Yes asks for an explanation
@@ -138,7 +146,10 @@ const CHOICES = {
   services:   ['Police (RCMP)', 'Ambulance', 'Fire', 'Dept. of Environment', 'Tow', 'DTI', 'None'],
   // 'Ramp' added 2026-10-06 (Troy: "for lanes blocked on mva can you add Ramp").
   lanes:      ['Shoulder only', 'One lane', 'Both lanes', 'Ramp', 'Full closure'],
-  animals:    ['Deer', 'Moose', 'Bear', 'Coyote', 'Fox', 'Other'],
+  // Troy, 2026-10-28: "pair down the animal list on the MVA page to match the Animals page".
+  // The same list as animals.js SPECIES (a test holds them equal); DNR removes the first four.
+  animals:    ['Deer', 'Moose', 'Bear', 'Bird of prey', 'Other'],
+  animalsDnr: ['Deer', 'Moose', 'Bear', 'Bird of prey'],
   statuses:   ['Notified', 'Accident report started', 'Under investigation',
                'Repairs pending', 'Ready for claim', 'Closed'],
 };
@@ -183,6 +194,9 @@ function shape(rec) {
     roadkill:       !!f[F.roadkill],
     animalType:     sel(f[F.animalType]),
     animalCount:    f[F.animalCount] != null ? f[F.animalCount] : null,
+    animalOther:    f[F.animalOther] || '',
+    animalDnrCalledAt: f[F.animalDnrAt] || '', animalDnrCalledBy: f[F.animalDnrBy] || '',
+    animalRemovedAt: f[F.animalRemovedAt] || '', animalRemovedBy: f[F.animalRemovedBy] || '',
     photos:         arr(f[F.photos]).map(a => ({ id: a.id, url: a.url, filename: a.filename, thumb: a.thumbnails?.small?.url || '' })),
     summary:        f[F.summary] || '',
     notAtScene:     !!f[F.notAtScene],
@@ -291,6 +305,14 @@ function toFields(b, mvaNo) {
   if (!unk.includes('vehicles')) n(F.vehicles, b.vehicles);
   if (unk.length) f[F.unknown] = unk.map(k => UNKNOWABLE[k]).join(', ');
   n(F.animalCount, b.animalCount);
+  if (b.roadkill && b.animalType === 'Other') set(F.animalOther, String(b.animalOther || '').trim().slice(0, 80));
+  // Already dealt with when the MVA is filed: DNR called from the truck, or already buried.
+  if (b.roadkill && b.animalClosedNow === true && CHOICES.animals.includes(b.animalType)) {
+    const at = new Date().toISOString(), by = String(b.patroller || b.submittedBy || '').trim().slice(0, 120);
+    if (CHOICES.animalsDnr.includes(b.animalType)) { f[F.animalDnrAt] = at; f[F.animalDnrBy] = by; }
+    else { f[F.animalRemovedAt] = at; f[F.animalRemovedBy] = by; }
+    f[F.animalClosedBy] = String(b.submittedBy || '').trim().slice(0, 120);
+  }
   if (b.services !== undefined) f[F.services] = pickMany(CHOICES.services, b.services);
 
   // Checkboxes always written, so an unticked box records a real "no".
@@ -735,6 +757,10 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'Additional resources were called — say which.' });
       if (body.spill && !body.doeCalled)
         return res.status(400).json({ error: 'A spill requires the Department of Environment to be called — confirm before submitting.' });
+      if (body.roadkill && !CHOICES.animals.includes(body.animalType))
+        return res.status(400).json({ error: 'Animal involved — pick the animal (' + CHOICES.animals.join(', ') + ').' });
+      if (body.roadkill && body.animalType === 'Other' && String(body.animalOther || '').trim().length < 2)
+        return res.status(400).json({ error: 'Animal involved — say what the animal was.' });
 
       const mvaNo = await uniqueMvaNo(buildMvaNo(body.date, body.km, body.direction));
       // The patroller's address comes from the Employees directory by name — never

@@ -27,10 +27,23 @@
 //                     lat?, lng?, observedAt?, reportedBy?, notes?, mva?, closedNow?}
 //                             -> { report, email }
 // POST  /api/animals?id=rec…&action=close {by?, at?}  -> { report }   DNR called, or buried
+// POST  /api/animals?id=rec…&action=close&source=mva {by?, at?}  -> the same, for an animal on an MVA
+//
+// Animals hit in an MVA (Troy, 2026-10-28: "when an animal entry is a deer … and there is a vehicle
+// present it is an MVA. Does the DNR call button come up, also does the deer go to the Road Kill
+// stats"). The MVA record stays the one record of that animal; this page reads it in:
+//   - an MVA animal is on the open list until DNR is called / it is buried, on the same 24-hour
+//     clock from the time of the MVA, marked with its MVA No.; closing it writes the MVA's
+//     Animal DNR Called / Animal Removed fields;
+//   - it counts in this year's road kill by species;
+//   - MVAs before MVA_FROM (when the DNR step reached the MVA form) are counted but never put on
+//     the open list — whatever was done about them was not recorded anywhere;
+//   - a species no longer on the list (Coyote, Fox on older MVAs) counts as Other.
 
 const L = require('./_lib');
 const C = require('./_conditions');
 const { requireCaller } = require('./_auth');
+const M = require('./mva').lib;
 
 const T_AN = 'tbl8avT8C3tPbP8n4';
 const F = {
@@ -51,6 +64,7 @@ const TITLES = ['Area Manager', 'Operations Manager'];
 const SWITCH = 'Animal sighting email';
 const RECENT_DAYS = 30;
 const CLOCK_H = 24;                                                     // OMM 409.2.2(a)
+const MVA_FROM = '2026-10-28T03:00:00.000Z';                          // the DNR step on the MVA form
 const okEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || '').trim());
 
 function newId(d = new Date()) {
@@ -195,6 +209,42 @@ function countsFor(rows, year) {
   }
   return { year, rows: out };
 }
+/* An animal on an MVA, shaped like an Animal Report row (source 'MVA'). */
+function fromMva(row) {
+  let species = row.animalType || '', other = row.animalOther || '';
+  if (!SPECIES.includes(species)) { other = other || species; species = 'Other'; }
+  const observedAt = row.occurredAt || '';
+  const done = !!(row.animalDnrCalledAt || row.animalRemovedAt);
+  const legacy = !done && !!observedAt && observedAt < MVA_FROM;
+  return {
+    id: row.id, source: 'MVA', mvaNo: row.mvaNo, reportId: 'MVA ' + row.mvaNo, kind: 'Road kill',
+    status: done || legacy ? 'Closed' : 'Open', legacy, species, otherSpecies: species === 'Other' ? other : '',
+    count: Number(row.animalCount) >= 1 ? Number(row.animalCount) : 1, route: row.route || '', direction: row.direction || '',
+    km: row.km, ramp: row.ramp || '', insideFence: false, lat: null, lng: null, observedAt,
+    reportedBy: row.patroller || '', enteredBy: row.submittedBy || '', notes: '',
+    dnrCalledAt: row.animalDnrCalledAt || '', dnrCalledBy: row.animalDnrCalledBy || '',
+    removedAt: row.animalRemovedAt || '', removedBy: row.animalRemovedBy || '',
+    alertEmailedTo: '', alertEmailedAt: '', needsDnr: needsDnr(species),
+    dueAt: observedAt ? new Date(new Date(observedAt).getTime() + CLOCK_H * 3600000).toISOString() : '',
+  };
+}
+/* Every MVA with an animal involved. A handful a year, so all of them, filtered here. */
+async function listMva() {
+  const out = []; let offset;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('returnFieldsByFieldId', 'true'); qs.set('pageSize', '100');
+    qs.set('filterByFormula', `{${M.F.roadkill}}`);
+    if (offset) qs.set('offset', offset);
+    const page = await L.airtable(`${M.BASE}/${encodeURIComponent(M.TABLE)}?${qs}`);
+    out.push(...(page.records || []).map(M.shape).filter(r => r.roadkill).map(fromMva));
+    offset = page.offset;
+  } while (offset && out.length < 2000);
+  return out;
+}
+const MVA_CLOSE = () => ({ [F.dnrAt]: M.F.animalDnrAt, [F.dnrBy]: M.F.animalDnrBy, [F.removedAt]: M.F.animalRemovedAt,
+  [F.removedBy]: M.F.animalRemovedBy, [F.closedEnteredBy]: M.F.animalClosedBy });
+
 async function listAll(now = new Date()) {
   const out = []; let offset;
   const year = Number(C.parts(now).date.slice(0, 4));
@@ -211,11 +261,15 @@ async function listAll(now = new Date()) {
     out.push(...(page.records || []).map(shape));
     offset = page.offset;
   } while (offset && out.length < 5000);
+  // Animals hit in an MVA. Never fatal: the page still shows its own reports if the MVA base cannot be read.
+  let mvaError = '';
+  try { out.push(...(await listMva()).filter(a => a.status === 'Open' || a.observedAt >= from)); }
+  catch (e) { mvaError = 'MVA animals could not be read: ' + e.message; console.warn('[animals]', mvaError); }
   // Re-checked here: the formula is not trusted alone.
   const open = out.filter(a => a.kind === 'Road kill' && a.status === 'Open').sort((a, b) => a.observedAt.localeCompare(b.observedAt));
   const recent = out.filter(a => a.observedAt >= since && !(a.kind === 'Road kill' && a.status === 'Open'))
     .sort((a, b) => b.observedAt.localeCompare(a.observedAt));
-  return { open, recent, counts: countsFor(out, year) };
+  return Object.assign({ open, recent, counts: countsFor(out, year) }, mvaError ? { mvaError } : {});
 }
 
 module.exports = async function handler(req, res) {
@@ -238,6 +292,22 @@ module.exports = async function handler(req, res) {
         if (!/^rec[A-Za-z0-9]{14}$/.test(String(Q.id))) return res.status(400).json({ error: 'Bad id' });
         if (Q.action !== 'close') return res.status(400).json({ error: 'Unknown action' });
         const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true');
+        if (Q.source === 'mva') {
+          const row = M.shape(await L.airtable(`${M.BASE}/${encodeURIComponent(M.TABLE)}/${Q.id}?${qs}`));
+          if (!row.roadkill) return res.status(400).json({ error: 'That MVA has no animal involved.' });
+          const rep = fromMva(row);
+          if (rep.status === 'Closed') {
+            const done = rep.dnrCalledAt ? `DNR called ${dt(rep.dnrCalledAt)} by ${rep.dnrCalledBy}` : rep.removedAt ? `removed ${dt(rep.removedAt)} by ${rep.removedBy}` : 'from before the DNR step was on the MVA form';
+            return res.status(409).json({ error: `Already closed — ${done}.`, report: rep });
+          }
+          const c = cleanClose(body, rep, caller);
+          if (c.error) return res.status(400).json({ error: c.error });
+          const map = MVA_CLOSE(), fields = {};
+          for (const [k, v] of Object.entries(c.fields)) if (map[k]) fields[map[k]] = v;
+          const upd = fromMva(M.shape(await L.airtable(`${M.BASE}/${encodeURIComponent(M.TABLE)}/${row.id}`, { method: 'PATCH',
+            body: JSON.stringify({ returnFieldsByFieldId: true, fields }) })));
+          return res.status(200).json({ report: upd });
+        }
         const rep = shape(await L.airtable(`${C.BASE}/${T_AN}/${Q.id}?${qs}`));
         if (rep.kind !== 'Road kill') return res.status(400).json({ error: 'Only road kill is closed.' });
         if (rep.status === 'Closed') {
@@ -265,4 +335,4 @@ module.exports = async function handler(req, res) {
   }
 };
 module.exports.__test = { F, T_AN, KINDS, SPECIES, DNR, ROUTES, DIRECTIONS, TITLES, LIST, SWITCH, newId, cleanReport, cleanClose, shape,
-  recipients, message, countsFor, listAll };
+  recipients, message, countsFor, listAll, fromMva, listMva, MVA_FROM };
