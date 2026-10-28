@@ -665,7 +665,9 @@ module.exports = async function handler(req, res) {
         try { sceneClear = sceneView(await sceneClearsFor(row.mvaNo)); } catch (_) { sceneClear = { sent: false, unknown: true }; }
         // The DMT work order on the file: status and a link (2026-10-27). Never fatal.
         const dmt = await DL.ensure(row.dmtWo, row.mvaNo, row.id, caller.name || '');
-        return res.status(200).json({ row, notification, sceneClear, dmt, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
+        // …and every work order logged to this MVA, wherever it was raised (2026-10-28).
+        const dmtWos = await DL.mvaWorkOrders(row.mvaNo);
+        return res.status(200).json({ row, notification, sceneClear, dmt, dmtWos, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
           photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
       }
       // Anyone on the file's route (a manager of someone, the approver, the claims

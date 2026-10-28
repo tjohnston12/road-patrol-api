@@ -38,6 +38,7 @@
 
 const L = require('./_lib');
 const { requireCaller } = require('./_auth');
+const DL = require('./_dmt-link');
 
 const BASE  = process.env.AIRTABLE_BASE || 'app2m7rkP51kLLpbe';
 const TABLE = process.env.PATROL_TABLE  || 'tblosu2dzKTwhuHnf';
@@ -299,6 +300,12 @@ function cleanDef(d) {
     // true once the DMT has been given this row's photos, so a row that is
     // already raised is not re-sent on every save for the rest of the shift
     photosSent:  !!d.photosSent,
+    /* Troy, 2026-10-28: "when entering a dmt from patrol report, can you have a optional box of
+       mva numbers so that items can be logged to an mva at anytime". The MVA No. this item is
+       logged to (optional, and changeable after the row is raised), and the one the DMT work
+       order was last told about — the difference is what still has to be sent. */
+    mva:         MVA_NO.test(String(d.mva || '').trim()) ? String(d.mva).trim() : '',
+    mvaSent:     MVA_NO.test(String(d.mvaSent || '').trim()) ? String(d.mvaSent).trim() : '',
   };
   if (out.km === undefined) delete out.km;
   if (out.toKm === undefined) delete out.toKm;
@@ -306,6 +313,41 @@ function cleanDef(d) {
   if (out.lng === undefined) delete out.lng;
   return out;
 }
+// "2026-10-22-427.200-EB": date, km to three places, direction (mva.js mvaNumber()).
+const MVA_NO = /^\d{4}-\d{2}-\d{2}-\d{1,4}\.\d{3}-(EB|WB|NB|SB)$/;
+const MVA_BASE = 'appMKaiabPAPx3JaV', MVA_TABLE = 'tblFnoVfyA9nSEOwk', MVA_NO_FIELD = 'flddJ5v5jZ9rv4VWg';
+/* The MVA's record id, so the DMT's banner can open the file. Null when there is no such MVA. */
+async function mvaRecordId(mvaNo) {
+  const qs = new URLSearchParams();
+  qs.set('returnFieldsByFieldId', 'true'); qs.set('maxRecords', '1'); qs.append('fields[]', MVA_NO_FIELD);
+  qs.set('filterByFormula', `{MVA No.}='${String(mvaNo).replace(/'/g, "\\'")}'`);
+  const j = await airtable(`${MVA_BASE}/${MVA_TABLE}?${qs}`);
+  const rec = (j.records || []).find(x => (x.fields || {})[MVA_NO_FIELD] === mvaNo);
+  return rec ? rec.id : null;
+}
+/* Tell the DMT which MVA each raised row is logged to — or that it no longer is. Returns
+   seq → the MVA No. now recorded on the work order ('' for none). Never throws: a row whose
+   link did not go keeps its old mvaSent and is tried again on the next flush. */
+async function linkMvas(rows, by) {
+  const done = new Map();
+  for (const d of rows) {
+    if (!d.wo || d.mva === d.mvaSent) continue;
+    try {
+      if (d.mva) {
+        const id = await mvaRecordId(d.mva);
+        if (!id) { console.warn(`patrol: MVA ${d.mva} not found — ${d.wo} not linked`); continue; }
+        const r = await DL.link({ wo: d.wo, mvaNo: d.mva, mvaId: id, by });
+        if (r.found && r.linked) done.set(d.seq, d.mva);
+      } else {
+        // Cleared: let go of the work order, if it still names the MVA it was linked to.
+        const r = await DL.link({ wo: '', prevWo: d.wo, mvaNo: d.mvaSent, by });
+        if (r.checked !== false) done.set(d.seq, '');
+      }
+    } catch (e) { console.warn('patrol: MVA link for', d.wo, '—', e.message); }
+  }
+  return done;
+}
+
 function cleanDefs(list) {
   if (!Array.isArray(list)) return null;
   const seen = new Set();
@@ -871,7 +913,8 @@ module.exports = async function handler(req, res) {
          request and not the next. */
       if (Array.isArray(body.raiseDeficiencies)) {
         const out = await raiseDeficiencies(body.id, rec, body.raiseDeficiencies);
-        return res.status(200).json({ raised: out.raised, note: out.note, row: out.row || shape(rec) });
+        return res.status(200).json({ raised: out.raised, linked: out.linked || (out.raised || []).filter(x => x.mvaLinked !== undefined).map(x => ({ seq: x.seq, mva: x.mvaLinked })),
+          note: out.note, row: out.row || shape(rec) });
       }
 
       const submitting = body.submit === true;
@@ -891,7 +934,7 @@ module.exports = async function handler(req, res) {
       let mergedDefs = null;
       if (submitting) {
         const pend = mergeDefs(parseDefs(rec.fields?.[F.defsJson]),
-                               cleanDefs(body.deficiencyRows) || [], null).filter(d => !d.wo);
+                               cleanDefs(body.deficiencyRows) || [], null).filter(d => !d.wo || d.mva !== d.mvaSent);   // + MVA links still to send
         if (pend.length) {
           const out = await raiseDeficiencies(body.id, rec, pend);
           if (out.merged) mergedDefs = out.merged;
@@ -959,6 +1002,23 @@ const defReady = d => !!(d && d.standard && d.finding && d.route && d.km !== und
    stay on the report and go out on the next save, the next `online`, or at
    submit. A deficiency can be raised late. A shift report lost to a DMT outage
    cannot be recovered at all. */
+/* Nothing new for the DMT, only MVA links to send or take back. */
+async function linkOnly(recId, stored, list, by) {
+  const merged = mergeDefs(stored, list, null);
+  const linked = await linkMvas(merged, by);
+  if (!linked.size) return { raised: [], linked: [], note: 'the MVA link did not go', merged: null };
+  merged.forEach(d => { if (linked.has(d.seq)) d.mvaSent = linked.get(d.seq); });
+  const out = [...linked].map(([seq, mva]) => ({ seq, mva }));
+  try {
+    const updated = await airtable(`${BASE}/${encodeURIComponent(TABLE)}/${encodeURIComponent(recId)}`, {
+      method: 'PATCH', body: JSON.stringify({ fields: { [F.defsJson]: merged.length ? JSON.stringify(merged) : '' }, returnFieldsByFieldId: true }) });
+    return { raised: [], linked: out, note: '', merged, row: shape(updated) };
+  } catch (e) {
+    console.error('patrol: MVA linked in the DMT but not recorded here:', e.message);
+    return { raised: [], linked: out, note: 'linked, but not yet recorded on the report', merged };
+  }
+}
+
 async function raiseDeficiencies(recId, rec, incoming) {
   const f = rec.fields || {};
   const reportId = f[F.reportId] || '';
@@ -978,7 +1038,11 @@ async function raiseDeficiencies(recId, rec, incoming) {
   ));
 
   if (!reportId) return { raised: [], note: 'the report has no Report ID yet', merged: null };
-  if (!send.length) return { raised: [], note: 'nothing to raise', merged: null };
+  // Raised rows whose MVA No. was set, changed or cleared since the DMT was last told.
+  const woOf = d => d.wo || (stored.find(x => x.seq === d.seq) || {}).wo || '';
+  const relink = list.filter(d => woOf(d) && d.mva !== d.mvaSent);
+  if (!send.length && !relink.length) return { raised: [], note: 'nothing to raise', merged: null };
+  if (!send.length) return linkOnly(recId, stored, list, f[F.patroller] || '');
 
   let results = [];
   try {
@@ -1055,6 +1119,10 @@ async function raiseDeficiencies(recId, rec, incoming) {
 
   const merged = mergeDefs(stored, list, woBySeq);
   merged.forEach(d => { const x = dupBySeq.get(d.seq); if (x) d.dup = x; });
+  // A new work order with an MVA No. on its row — and any raised row whose MVA No. changed.
+  const linked = await linkMvas(merged, f[F.patroller] || '');
+  merged.forEach(d => { if (linked.has(d.seq)) d.mvaSent = linked.get(d.seq); });
+  raised.forEach(x => { if (linked.has(x.seq)) x.mvaLinked = linked.get(x.seq); });
   /* Only the rows the DMT actually acknowledged are marked delivered. A row
      whose send failed stays unmarked and is tried again — the alternative is a
      photo that silently never reaches the work order. */

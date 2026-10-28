@@ -68,4 +68,11 @@ async function ensure(wo, mvaNo, mvaId, by) {
   return l.found ? l : d;
 }
 
-module.exports = { normWo, dmtUrl, link, peek, ensure, DMT_INTAKE_URL };
+/* Every DMT work order logged to this MVA — from the patrol report's MVA box, or the accident
+   file's own DMT number (Troy, 2026-10-28). Short timeout; never throws. */
+async function mvaWorkOrders(mvaNo) {
+  const r = await callDmt({ action: 'mva-wos', mva: mvaNo || '' }, 3500);
+  return Array.isArray(r.workOrders) ? { checked: r.checked !== false, workOrders: r.workOrders } : { checked: false, workOrders: [], reason: r.reason || '' };
+}
+
+module.exports = { normWo, dmtUrl, link, peek, ensure, mvaWorkOrders, DMT_INTAKE_URL };
