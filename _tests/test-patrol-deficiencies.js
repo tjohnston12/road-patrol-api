@@ -40,6 +40,7 @@ const API = path.join(__dirname, '..', 'api', 'patrol.js');
 const libPath = path.join(__dirname, '..', 'api', '_lib.js');
 let airtableCalls = [];
 let airtableFail = null;
+let MVA_DB = {};   // MVA No. → record id, for the MVA lookups (2026-10-28)
 require.cache[libPath] = {
   id: libPath, filename: libPath, loaded: true, exports: {
     arr: x => (Array.isArray(x) ? x : x == null ? [] : [x]),
@@ -49,6 +50,10 @@ require.cache[libPath] = {
     airtable: async (url, opts) => {
       airtableCalls.push({ url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null });
       if (airtableFail) throw new Error(airtableFail);
+      if (String(url).includes('tblFnoVfyA9nSEOwk')) {
+        const want = (decodeURIComponent(String(url).replace(/\+/g, ' ')).match(/\{MVA No\.\}='([^']*)'/) || [])[1];
+        return { records: MVA_DB[want] ? [{ id: MVA_DB[want], fields: { flddJ5v5jZ9rv4VWg: want } }] : [] };
+      }
       const b = opts && opts.body ? JSON.parse(opts.body) : {};
       return { id: 'recRPT0000000001', fields: b.fields || {} };
     },
@@ -101,7 +106,7 @@ const row = (o = {}) => ({ seq: 1, standard: 'OMM 101', finding: 'Potholes', rou
   // 'division' and 'divTouched' added deliberately 2026-10-01 — the section 7 Division box
   const ALLOWED = ['assetId', 'assetName', 'description', 'direction', 'divTouched', 'division', 'dup',
                    'finding', 'km', 'lat', 'lng', 'photos', 'photosSent', 'route', 'seq', 'side',
-                   'standard', 'toKm', 'wo'];
+                   'standard', 'toKm', 'wo', 'mva', 'mvaSent'];   // mva / mvaSent: 2026-10-28
   eq('unknown keys do not survive', Object.keys(c).filter(k => ALLOWED.indexOf(k) < 0), []);
   ok('nothing the client invented is there', !('evil' in c) && !('Status' in c) && !('x' in c),
      Object.keys(c).join(','));
@@ -544,6 +549,70 @@ ok('and the merged rows are what gets written',
 ok('the report email lists the work orders the shift raised',
    /Work orders raised/.test(SRC));
 
+
+/* ══ 8 · logging a deficiency to an MVA (Troy, 2026-10-28) ══════════════════
+   "when entering a dmt from patrol report, can you have a optional box of mva numbers so that
+   items can be logged to an mva at anytime". The row carries an MVA No.; once it has a work
+   order the DMT is told (intake action link-mva, the service key) — at raise time, or later
+   when the box is set, changed or cleared on a row already raised. */
+{
+  process.env.DMT_INTAKE_SECRET = 'svc-key';
+  const MVA1 = '2026-10-22-427.200-EB', MVA2 = '2026-10-25-446.000-WB';
+  MVA_DB = { [MVA1]: 'recYO4jxwFZmCjeBa', [MVA2]: 'rec0BpRhyOd8m77gB' };
+  eq('the MVA No. is kept, a junk one is not', [T.cleanDef(row({ mva: ' ' + MVA1 + ' ' })).mva, T.cleanDef(row({ mva: 'Na' })).mva, T.cleanDef(row({ mva: '<b>' })).mva], [MVA1, '', '']);
+  const LINKS = [], INTAKES = [];
+  let dmtDown = false;
+  global.fetch = async (url, o) => {
+    const b = JSON.parse(o.body);
+    if (b.action === 'link-mva') {
+      LINKS.push(Object.assign({ key: o.headers['x-intake-key'] }, b));
+      if (dmtDown) throw new Error('ECONNRESET');
+      return { ok: true, status: 200, json: async () => b.wo ? { ok: true, found: true, linked: true, workOrder: b.wo } : { ok: true, found: false, reason: 'blank', unlinked: b.unlinkWo } };
+    }
+    INTAKES.push(b);
+    return { ok: true, status: 200, json: async () => ({ ok: true, results: b.deficiencies.map((d, i) => ({ workOrder: 'WO-2026-0' + (600 + i) })) }) };
+  };
+  airtableCalls = []; airtableFail = null;
+  let out = await T.raiseDeficiencies('recRPT0000000001', recOf(null), [row({ seq: 1, mva: MVA1 }), row({ seq: 2 })]);
+  eq('raising a row with an MVA No.: the new work order is linked to that MVA, with its record id and the service key',
+    LINKS.map(l => [l.key, l.action, l.wo, l.mva, l.mvaId, l.by]), [['svc-key', 'link-mva', 'WO-2026-0600', MVA1, 'recYO4jxwFZmCjeBa', 'Jeremy MacDonald']]);
+  ok('…the MVA No. is not sent to intake as a field of the work order', !('mva' in INTAKES[0].deficiencies[0]));
+  const saved = JSON.parse(airtableCalls.filter(c => c.body && c.body.fields && c.body.fields[T.F.defsJson]).pop().body.fields[T.F.defsJson]);
+  eq('…and the report records what the DMT was told', saved.map(d => [d.seq, d.wo, d.mva, d.mvaSent]), [[1, 'WO-2026-0600', MVA1, MVA1], [2, 'WO-2026-0601', '', '']]);
+  eq('…the page hears back which rows were linked', out.raised.filter(x => x.mvaLinked !== undefined).map(x => [x.seq, x.mvaLinked]), [[1, MVA1]]);
+
+  // later in the shift: row 2 (already raised) is logged to an MVA — nothing goes to intake
+  LINKS.length = 0; INTAKES.length = 0; airtableCalls = [];
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved)), [Object.assign({}, saved[0]), Object.assign({}, saved[1], { mva: MVA2 })]);
+  eq('a raised row given an MVA No. later: linked, without raising anything', [INTAKES.length, LINKS.map(l => [l.wo, l.mva])], [0, [['WO-2026-0601', MVA2]]]);
+  eq('…answered as linked', out.linked, [{ seq: 2, mva: MVA2 }]);
+  const saved2 = JSON.parse(airtableCalls.filter(c => c.body && c.body.fields && c.body.fields[T.F.defsJson]).pop().body.fields[T.F.defsJson]);
+  eq('…and recorded', saved2.map(d => d.mvaSent), [MVA1, MVA2]);
+
+  // changed to the other MVA, then cleared
+  LINKS.length = 0;
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved2)), [Object.assign({}, saved2[0], { mva: MVA2 }), saved2[1]]);
+  eq('changed: the work order is linked to the new MVA', LINKS.map(l => [l.wo, l.mva]), [['WO-2026-0600', MVA2]]);
+  LINKS.length = 0;
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved2)), [saved2[0], Object.assign({}, saved2[1], { mva: '' })]);
+  eq('cleared: the work order lets go of the MVA it named', LINKS.map(l => [l.wo, l.unlinkWo, l.mva]), [['', 'WO-2026-0601', MVA2]]);
+  eq('…and the row records no MVA', out.linked, [{ seq: 2, mva: '' }]);
+
+  // nothing changed: nothing sent
+  LINKS.length = 0; INTAKES.length = 0;
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved2)), saved2);
+  eq('no change: nothing goes to the DMT', [LINKS.length, INTAKES.length, out.note], [0, 0, 'nothing to raise']);
+
+  // an MVA No. that does not exist, and the DMT down: tried again later, nothing lost
+  LINKS.length = 0;
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved2)), [saved2[0], Object.assign({}, saved2[1], { mva: '2026-01-01-1.000-EB' })]);
+  eq('an MVA No. with no MVA: the DMT is not asked, and it stays to be sent', [LINKS.length, out.linked], [0, []]);
+  dmtDown = true;
+  out = await T.raiseDeficiencies('recRPT0000000001', recOf(JSON.stringify(saved2)), [saved2[0], Object.assign({}, saved2[1], { mva: MVA1 })]);
+  eq('the DMT down: not recorded as sent, so the next flush tries again', [LINKS.length, out.linked, out.note], [1, [], 'the MVA link did not go']);
+  dmtDown = false;
+  delete process.env.DMT_INTAKE_SECRET;
+}
 global.fetch = realFetch;
 console.log(`\n  ${pass} passed, ${fail} failed`);
 if (fail) { failures.forEach(f => console.log('   FAIL  ' + f)); process.exitCode = 1; }

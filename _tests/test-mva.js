@@ -532,11 +532,14 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
      the DMT work order is told which MVA it is for. */
   {
     reset();
-    const DMT = []; let LINKED = '';
+    const DMT = [], WOS_ASKED = []; let LINKED = '';
     const prevFetch = global.fetch;
     global.fetch = async (url, opt) => {
       if (String(url).includes('dmt.mrdc-htra.com/api/intake')) {
-        const b = JSON.parse(opt.body); DMT.push(b);
+        const b = JSON.parse(opt.body);
+        if (b.action === 'mva-wos') { WOS_ASKED.push(b.mva);
+          return { ok: true, status: 200, json: async () => ({ ok: true, workOrders: [{ workOrder: 'WO-2026-0047', status: 'In progress', url: 'https://dmt.mrdc-htra.com/?wo=WO-2026-0047' }, { workOrder: 'WO-2026-0601', status: 'New', url: 'https://dmt.mrdc-htra.com/?wo=WO-2026-0601' }] }) }; }
+        DMT.push(b);
         const found = b.wo === 'WO-2026-0047';
         if (found && !b.peek) LINKED = b.mva;
         return { ok: true, status: 200, json: async () => ({ ok: true, found, workOrder: found ? b.wo : undefined, status: found ? 'In progress' : undefined, linkedMva: found ? LINKED : undefined, linked: found && !b.peek }) };
@@ -558,6 +561,8 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
     eq('the same number again: nothing more is written or asked', [DMT.length, AR_PATCHES.length, r.json.dmt], [n, p, undefined]);
     r = await call('GET', null, { id });
     eq('opening the file shows the work order status', [r.json.dmt.found, r.json.dmt.status, DMT[DMT.length - 1].peek], [true, 'In progress', true]);
+    eq('…and every DMT work order logged to this MVA (from a patrol report or the file), asked by its MVA No.',
+      [r.json.dmtWos.workOrders.map(w => w.workOrder), WOS_ASKED[WOS_ASKED.length - 1]], [['WO-2026-0047', 'WO-2026-0601'], no]);
     LINKED = 'someone-else';
     r = await call('GET', null, { id });
     eq('a work order already naming another MVA is left alone on open', [DMT[DMT.length - 1].peek, LINKED], [true, 'someone-else']);
