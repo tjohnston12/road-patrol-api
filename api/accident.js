@@ -73,6 +73,9 @@ const A = {
   hasTrailer: 'fldnwBKWP05K43yPx', trailerPlatePhoto: 'fldWb06wd1RE8uuiq', trailerPlate: 'fldj44y9MXHrp42Nz',
   // Troy, 2026-10-23: "photos in step two have a check box that says i did not get photos and make them not required".
   noPhotos: 'fldYe5TNVP902IMdM',
+  // Troy, 2026-10-29: "selection boxes so the patroller can put in their observations in case they differ"
+  // (from the Environment Canada reading). The two free-text boxes stay, for anything the picks don't cover.
+  obsWeather: 'fldBt4HdGuQ4DaTVi', obsRoad: 'fldpj4aXItsi32MFq', obsVisibility: 'fldoh1c1oVomqVRKg', obsLight: 'fldSUlRJoLeZ5ILog', obsTemp: 'fld0ZPVS7EsN3Je16',
 };
 // Vehicles 2…10 (Accident Vehicles). Vehicle 1 is the report row (A above).
 const T_VEH = process.env.MVA_VEH_TABLE || 'tblpMfPIXMJhFmuuw';
@@ -91,6 +94,10 @@ const CHOICES = {
   divisions: ['Eastern', 'Western'], routes: ['Route 1', 'Route 2', 'Route 7', 'Route 8', 'Other'], directions: ['EB', 'WB', 'NB', 'SB'],   // all routes (Troy, 2026-10-08)
   ramps: ['ON Ramp', 'OFF Ramp'], ynu: ['Yes', 'No', 'Unknown'],
   items: ['None', 'Signs', 'First Aid Kit', 'Spill Kit', 'Fire Extinguisher'],
+  obsWeather: ['Clear', 'Cloudy', 'Rain', 'Drizzle', 'Freezing rain', 'Snow', 'Blowing snow', 'Ice pellets', 'Fog', 'Strong wind'],
+  obsRoad: ['Dry', 'Wet', 'Slush', 'Snow covered', 'Packed snow', 'Icy', 'Black ice', 'Frost', 'Water pooling', 'Sand / gravel / debris'],
+  obsVisibility: ['Good', 'Reduced', 'Poor'],
+  obsLight: ['Daylight', 'Dawn / dusk', 'Dark - lit', 'Dark - unlit'],
 };
 // Free-text fields: key → field (and a length cap).
 const TEXT = ['truck', 'tcEmployee', 'tcUnit', 'tcMoreText', 'roadCond', 'weather', 'damages', 'itemsText', 'driver', 'owner',
@@ -102,7 +109,9 @@ const PHOTO = { licence: 'licencePhoto', plate: 'platePhoto', trailer: 'trailerP
 // Submit needs these (the DeviceMagic form's required set, plus the two Yes/No/Unknown).
 const REQUIRED = [['patroller', 'Patroller'], ['division', 'Division'], ['timeOfAccident', 'Time of accident'], ['route', 'Route'],
   ['km', 'KM location'], ['direction', 'Direction'], ['vehicles', 'Number of vehicles'], ['injuries', 'Injuries'],
-  ['fatality', 'Fatality'], ['roadCond', 'Road conditions'], ['weather', 'Weather conditions'], ['damages', 'Description of damages']];
+  ['fatality', 'Fatality'], ['damages', 'Description of damages']];
+// Road and weather (2026-10-29): a pick or the notes box will do.
+const OBS_REQUIRED = [['obsRoad', 'roadCond', 'Road conditions'], ['obsWeather', 'weather', 'Weather conditions']];
 
 const isoOk = v => typeof v === 'string' && !isNaN(Date.parse(v)) && /^\d{4}-\d{2}-\d{2}T/.test(v);
 function toFields(r) {
@@ -116,6 +125,10 @@ function toFields(r) {
   one('injuries', A.injuries3, CHOICES.ynu); one('fatality', A.fatality3, CHOICES.ynu);
   if (r.ramp !== undefined) f[A.ramp] = CHOICES.ramps.includes(r.ramp) ? r.ramp : '';
   if (r.items !== undefined) f[A.items] = arr(r.items).filter(v => CHOICES.items.includes(v));
+  if (r.obsWeather !== undefined) f[A.obsWeather] = [...new Set(arr(r.obsWeather).filter(v => CHOICES.obsWeather.includes(v)))];
+  if (r.obsRoad !== undefined) f[A.obsRoad] = [...new Set(arr(r.obsRoad).filter(v => CHOICES.obsRoad.includes(v)))];
+  one('obsVisibility', A.obsVisibility, CHOICES.obsVisibility); one('obsLight', A.obsLight, CHOICES.obsLight);
+  if (r.obsTemp !== undefined) { const n = Number(r.obsTemp); f[A.obsTemp] = r.obsTemp === '' || r.obsTemp == null || isNaN(n) || n < -60 || n > 50 ? null : Math.round(n * 10) / 10; }
   if (r.km !== undefined) { const n = Number(r.km); f[A.km] = r.km === '' || r.km == null || isNaN(n) ? null : n; }
   if (r.vehicles !== undefined) { const n = parseInt(r.vehicles, 10); f[A.vehicles] = r.vehicles === '' || r.vehicles == null || isNaN(n) ? null : n; }
   if (r.tcCrew !== undefined) {
@@ -153,6 +166,8 @@ function shapeAR(rec) {
   for (const k of TIMES) out[k] = f[A[k]] || '';
   Object.assign(out, { division: sel(f[A.division]), route: sel(f[A.route]), direction: sel(f[A.direction]), ramp: f[A.ramp] || '',
     injuries: sel(f[A.injuries3]), fatality: sel(f[A.fatality3]), items: arr(f[A.items]).map(sel),
+    obsWeather: arr(f[A.obsWeather]).map(sel), obsRoad: arr(f[A.obsRoad]).map(sel), obsVisibility: sel(f[A.obsVisibility]), obsLight: sel(f[A.obsLight]),
+    obsTemp: f[A.obsTemp] != null ? f[A.obsTemp] : '',
     km: f[A.km] != null ? f[A.km] : '', vehicles: f[A.vehicles] != null ? f[A.vehicles] : '',
     status: sel(f[A.status]) || 'Draft', submittedBy: f[A.submittedBy] || '', submittedAt: f[A.submittedAt] || '',
     startedBy: f[A.startedBy] || '', startedAt: f[A.startedAt] || '',
@@ -398,7 +413,15 @@ async function truckChoices() {
 /* Troy, 2026-10-23: "make items used at scene required" — a tick in Items used by MRDC (None counts)
    or something typed in Other items used. */
 const itemsMissing = r => (arr(r.items).length || String(r.itemsText || '').trim()) ? [] : ['Items used at the scene (or None)'];
-function missingFor(r, mva) { return REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label).concat(itemsMissing(r), photosMissing(r, mva)); }
+const obsMissing = r => OBS_REQUIRED.filter(([pick, text]) => !arr(r[pick]).length && !String(r[text] || '').trim()).map(([, , label]) => label);
+function missingFor(r, mva) {
+  const base = REQUIRED.filter(([k]) => r[k] === '' || r[k] == null).map(([, label]) => label);
+  const obs = obsMissing(r);
+  // Keep the old order: road and weather sit between Fatality and Description of damages.
+  const at = base.indexOf('Description of damages');
+  if (at >= 0) base.splice(at, 0, ...obs); else base.push(...obs);
+  return base.concat(itemsMissing(r), photosMissing(r, mva));
+}
 
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
