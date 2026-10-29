@@ -386,6 +386,35 @@ const FULL = { patroller: 'Tom Gibson', division: 'Western', timeOfAccident: '20
     eq('without the box the photos are still needed', L.photosMissing({ hitRun: false, photos: {} }, {}).length, 4);
   }
 
+  /* Troy, 2026-10-29: "selection boxes so the patroller can put in their observations in case they
+     differ" — weather / road picks, visibility, light and a temperature, beside Environment Canada. */
+  {
+    const om = seedMva({ flddJ5v5jZ9rv4VWg: '2026-10-06-330.000-EB' });
+    r = await call('GET', null, { mva: om });
+    eq('choices: observed weather', r.json.choices.obsWeather, ['Clear', 'Cloudy', 'Rain', 'Drizzle', 'Freezing rain', 'Snow', 'Blowing snow', 'Ice pellets', 'Fog', 'Strong wind']);
+    eq('choices: road surface, visibility, light', [r.json.choices.obsRoad.length, r.json.choices.obsVisibility, r.json.choices.obsLight],
+      [10, ['Good', 'Reduced', 'Poor'], ['Daylight', 'Dawn / dusk', 'Dark - lit', 'Dark - unlit']]);
+    r = await call('POST', { mva: om, report: { obsWeather: ['Snow', 'Blowing snow', 'Hail', 'Snow'], obsRoad: ['Black ice', 'Bogus'], obsVisibility: 'Poor', obsLight: 'Dark - unlit', obsTemp: '-3.46' } });
+    const ofl = Object.values(DB[T.ar]).find(x => x.fields.fldK8gqs6PfZAXNs9 === '2026-10-06-330.000-EB-AR').fields;
+    eq('stored: known picks only, no repeats', [ofl.fldBt4HdGuQ4DaTVi, ofl.fldpj4aXItsi32MFq, ofl.fldoh1c1oVomqVRKg, ofl.fldSUlRJoLeZ5ILog, ofl.fld0ZPVS7EsN3Je16],
+      [['Snow', 'Blowing snow'], ['Black ice'], 'Poor', 'Dark - unlit', -3.5]);
+    eq('…and read back', [r.json.report.obsWeather, r.json.report.obsRoad, r.json.report.obsVisibility, r.json.report.obsLight, r.json.report.obsTemp],
+      [['Snow', 'Blowing snow'], ['Black ice'], 'Poor', 'Dark - unlit', -3.5]);
+    r = await call('POST', { mva: om, report: { obsVisibility: 'Foggy', obsTemp: '200' } });
+    eq('an unknown visibility is ignored; a silly temperature is blanked', [ofl.fldoh1c1oVomqVRKg, ofl.fld0ZPVS7EsN3Je16], ['Poor', null]);
+    r = await call('POST', { mva: om, report: { obsVisibility: '', obsLight: '' } });
+    eq('visibility and light can be cleared', [ofl.fldoh1c1oVomqVRKg, ofl.fldSUlRJoLeZ5ILog], [null, null]);
+    const L = require(path.join(__dirname, '..', 'api', 'accident.js')).lib;
+    const base = Object.assign({}, FULL, { roadCond: '', weather: '', items: ['None'], noPhotos: true });
+    eq('road and weather: neither picked nor typed → both needed, in their old place', L.missingFor(base, {}), ['Road conditions', 'Weather conditions']);
+    eq('picks alone are enough', L.missingFor(Object.assign({}, base, { obsRoad: ['Wet'], obsWeather: ['Rain'] }), {}), []);
+    eq('typed notes alone are still enough', L.missingFor(Object.assign({}, base, { roadCond: 'Wet', weather: 'Rain' }), {}), []);
+    eq('one of each kind', L.missingFor(Object.assign({}, base, { obsRoad: ['Wet'] }), {}), ['Weather conditions']);
+    eq('the order is kept: road and weather before damages', L.missingFor(Object.assign({}, base, { damages: '' }), {}), ['Road conditions', 'Weather conditions', 'Description of damages']);
+    r = await call('POST', { mva: om, report: Object.assign({}, FULL, { roadCond: '', weather: '', obsRoad: ['Icy'], obsWeather: ['Freezing rain'], items: ['None'], noPhotos: true }), submit: true });
+    eq('submits on picks alone', [r.status, r.json.report && r.json.report.status], [200, 'Submitted']);
+  }
+
 
   /* Troy, 2026-10-27: "if they type the dmt number into the accident report can you link them
      back that way and attach them?" — the MVA folder gets the same number, and the DMT is told. */
