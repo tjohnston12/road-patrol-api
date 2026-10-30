@@ -532,13 +532,17 @@ async function team(ctx) {
     }
     offset = page.offset;
   } while (offset);
-  const roles = { ops: '', claims: '' };
+  const roles = { ops: '', claims: '', verifiers: {} };
   try {
     const qs = new URLSearchParams(); qs.set('returnFieldsByFieldId', 'true');
     const page = await airtable(`${BASE}/${T_ROLES}?${qs}`);
     for (const r of page.records || []) {
       const f = r.fields || {}, role = norm(f[RF.role]);
       if (role === 'operations manager') roles.ops = String(f[RF.emp] || '').trim();
+      // Troy, 2026-10-30: "verify … will be done by either Derek or Roger". One row per division
+      // ("Verifier - Western" / "Verifier - Eastern"), so the people can change without code.
+      const vm = role.match(/^verifier\s*[-–—]\s*(\w+)/);
+      if (vm && f[RF.emp]) roles.verifiers[vm[1].charAt(0).toUpperCase() + vm[1].slice(1)] = String(f[RF.emp]).trim();
       if (role === 'claims manager') roles.claims = String(f[RF.emp] || '').trim();
     }
   } catch (_) { /* no roles table: only admins approve / handle claims */ }
@@ -548,23 +552,28 @@ async function team(ctx) {
     managerOf: n => ((byName[norm(n)] || {}).manager || '') };
   return ctx.team;
 }
-// The verifier's name for this MVA ('' if nobody — then the approver verifies).
-function verifierName(row, t) { return t.managerOf(row.patroller) || t.managerOf(row.submittedBy) || t.roles.ops || ''; }
+/* Who verifies (Troy, 2026-10-30): the division's verifier from MVA File Roles (Western → Derek
+   Melanson, Eastern → Roger Cormier). Either verifier may verify any file — this is just who it is
+   sent to. No division: the patroller's manager, else the first verifier on file. */
+const verifierList = t => Object.values(t.roles.verifiers || {}).filter(Boolean);
+function verifierName(row, t) {
+  return (t.roles.verifiers || {})[row.division] || t.managerOf(row.patroller) || t.managerOf(row.submittedBy) || verifierList(t)[0] || '';
+}
 function accessFor(row, caller, t) {
   const me = norm(caller.name);
   const a = {
     admin: !!caller.isAdmin,
     own: !!me && [row.patroller, row.submittedBy].some(n => norm(n) === me),
-    verifier: !!me && norm(verifierName(row, t)) === me,
-    approver: !!me && norm(t.roles.ops) === me,
+    verifier: !!me && (norm(verifierName(row, t)) === me || verifierList(t).some(v => norm(v) === me)),
     claims: !!me && norm(t.roles.claims) === me,
   };
-  a.view = a.admin || a.own || a.verifier || a.approver || a.claims;
+  // The approve step was removed (Troy, 2026-10-30): verified files go straight to claims.
+  a.approver = false;
+  a.view = a.admin || a.own || a.verifier || a.claims;
   a.edit = a.admin || (a.own && EDITABLE.includes(row.stage));
   // What this person is being asked to do with it now.
   a.action = row.stage === 'Awaiting verification' && (a.verifier || a.admin) ? 'verify'
-    : row.stage === 'Awaiting approval' && (a.approver || a.admin) ? 'approve'
-    : row.stage === 'With claims' && (a.claims || a.admin) ? 'file'
+    : ['With claims', 'Awaiting approval'].includes(row.stage) && (a.claims || a.admin) ? 'file'
     : row.stage === 'Filed with insurance' && (a.claims || a.admin) ? 'paid'
     : EDITABLE.includes(row.stage) && (a.own || a.admin) ? 'build' : '';
   return a;
@@ -673,12 +682,12 @@ module.exports = async function handler(req, res) {
         // …and every work order logged to this MVA, wherever it was raised (2026-10-28).
         const dmtWos = await DL.mvaWorkOrders(row.mvaNo);
         return res.status(200).json({ row, notification, sceneClear, dmt, dmtWos, folder: folderView(row, await folderRows(row.mvaNo)), admin: !!caller.isAdmin,
-          photos: await photosFor(row), roles: { ops: ctx.team.roles.ops, claims: ctx.team.roles.claims } });
+          photos: await photosFor(row), roles: { claims: ctx.team.roles.claims, verifiers: ctx.team.roles.verifiers } });
       }
       // Anyone on the file's route (a manager of someone, the approver, the claims
       // manager) reads the lot and keeps what they may see; a patroller only theirs.
       const ctx = {}, t = await team(ctx), me = norm(caller.name);
-      const reviewer = !!me && (norm(t.roles.ops) === me || norm(t.roles.claims) === me || t.people.some(p => norm(p.manager) === me));
+      const reviewer = !!me && (norm(t.roles.claims) === me || verifierList(t).some(v => norm(v) === me) || t.people.some(p => norm(p.manager) === me));
       const mine = !caller.isAdmin && !reviewer;
       const recs = await fetchRows({ mine, who: caller.name });
       const rows = recs.map(shape).filter(r => { r.access = accessFor(r, caller, t); r.verifier = verifierName(r, t); return r.access.view; });
@@ -692,7 +701,7 @@ module.exports = async function handler(req, res) {
       for (const r of rows) r.sceneClearSent = scs ? sent.has(r.mvaNo) : null;
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ rows, scope: caller.isAdmin ? 'all' : reviewer ? 'review' : 'mine', items: FOLDER,
-        roles: { ops: t.roles.ops, claims: t.roles.claims } });
+        roles: { claims: t.roles.claims, verifiers: t.roles.verifiers } });
     }
 
     const body = L.parseBody(req);
@@ -981,24 +990,21 @@ async function step(row, body, caller, ctx, res) {
       `${esc(who)} has submitted the accident file. It is waiting for <b>${esc(verifier || 'a manager')}</b> to verify it.`, t);
     return res.status(200).json({ row: out, mail });
   }
-  if (stepName === 'verify' || stepName === 'approve') {
-    const want = stepName === 'verify' ? 'Awaiting verification' : 'Awaiting approval';
-    if (row.stage !== want) return wrong('It is not waiting for that (' + row.stage + ').');
-    if (stepName === 'verify' && !(a.verifier || a.admin)) return deny('Only ' + (row.verifier || 'the patroller\'s manager') + ' verifies this file.');
-    if (stepName === 'approve' && !(a.approver || a.admin)) return deny('Only ' + (t.roles.ops || 'the Operations Manager') + ' approves accident files.');
-    const next = stepName === 'verify' ? 'Awaiting approval' : 'With claims';
-    const fields = stepName === 'verify' ? { [F.verifiedBy]: who, [F.verifiedAt]: now } : { [F.approvedBy]: who, [F.approvedAt]: now };
-    const out = await go(Object.assign(fields, { [F.stage]: next, [F.history]: histLine(row, who, stepName === 'verify' ? 'verified' : 'approved') }));
-    const to = stepName === 'verify' ? t.roles.ops : t.roles.claims;
-    const mail = await sendStep(out, [t.emailOf(to)], `MVA ${out.mvaNo} — accident file ${stepName === 'verify' ? 'to approve' : 'approved — to file with insurance'}`,
-      stepName === 'verify' ? `${esc(who)} has verified the accident file. It is waiting for <b>${esc(to || 'the Operations Manager')}</b> to approve it.`
-                            : `${esc(who)} has approved the accident file. <b>${esc(to || 'The Claims Manager')}</b> can now process the claim with the insurance company.`, t);
+  if (stepName === 'approve') return wrong('There is no approve step any more — a verified file goes straight to ' + (t.roles.claims || 'the Claims Manager') + '.');
+  if (stepName === 'verify') {
+    if (row.stage !== 'Awaiting verification') return wrong('It is not waiting for that (' + row.stage + ').');
+    if (!(a.verifier || a.admin)) return deny('Only ' + (verifierList(t).join(' or ') || row.verifier || 'the area manager') + ' verifies accident files.');
+    const out = await go({ [F.verifiedBy]: who, [F.verifiedAt]: now, [F.stage]: 'With claims',
+      [F.history]: histLine(row, who, 'verified — sent to ' + (t.roles.claims || 'claims')) });
+    const to = t.roles.claims;
+    const mail = await sendStep(out, [t.emailOf(to)], `MVA ${out.mvaNo} — accident file verified, to process with insurance`,
+      `${esc(who)} has verified the accident file. <b>${esc(to || 'The Claims Manager')}</b> can now process the claim with the insurance company — print it or email it from the file.`, t);
     return res.status(200).json({ row: out, mail });
   }
   if (stepName === 'sendBack') {
     const note = String(body.note || '').trim();
     if (!note) return res.status(400).json({ error: 'Say what needs fixing — the note goes to the patroller.' });
-    const mayAt = { 'Awaiting verification': a.verifier, 'Awaiting approval': a.approver, 'With claims': a.claims, 'Filed with insurance': a.claims };
+    const mayAt = { 'Awaiting verification': a.verifier, 'Awaiting approval': a.claims, 'With claims': a.claims, 'Filed with insurance': a.claims };
     if (!(row.stage in mayAt)) return wrong('Only a submitted file can be sent back.');
     if (!(mayAt[row.stage] || a.admin)) return deny('It is not with you (' + row.stage + ').');
     const out = await go({ [F.stage]: 'Sent back', [F.sentBackNote]: note.slice(0, 5000),
@@ -1009,7 +1015,7 @@ async function step(row, body, caller, ctx, res) {
   }
   if (stepName === 'filed') {
     if (!(a.claims || a.admin)) return deny('Only ' + (t.roles.claims || 'the Claims Manager') + ' files the claim.');
-    if (row.stage !== 'With claims') return wrong('It is not with claims yet (' + row.stage + ').');
+    if (!['With claims', 'Awaiting approval'].includes(row.stage)) return wrong('It is not with claims yet (' + row.stage + ').');
     const fl = body.filed || {}, date = String(fl.date || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'The date it was filed is required' });
     if (!String(fl.insurer || '').trim()) return res.status(400).json({ error: 'The insurance company is required' });

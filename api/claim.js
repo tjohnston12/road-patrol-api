@@ -34,8 +34,21 @@
  *   POST {mva, action:'complete', done}             Mark complete / reopen; ticks the folder
  * Who: anyone who can see the MVA file reads it; only the patroller while the file is
  * Open / Sent back, or an admin, changes it (mva.js canEdit) — the same rule as the folder.
+ *
+ * The Claims Manager (Troy, 2026-10-30: "jay can print claim and email manually or email
+ * directly. Jay may also have some paperwork to attach"), once the file is verified (With claims,
+ * Filed with insurance, Paid), or an admin:
+ *   POST {mva, action:'paperwork', filename, contentType, data}   his own documents (Claims Paperwork)
+ *   POST {mva, action:'paperworkRemove', fileId}
+ *   POST {mva, action:'email', to, cc, message, insurer, claimNo, photos, markFiled}
+ *     emails the claim: the invoice in the body; the third-party invoices, his paperwork and (if
+ *     asked) the accident / repair photos attached. Reply-to and cc him. Through the Patrol
+ *     Notifications switch "MVA file workflow" (Owner test sends it to the Owner only). With
+ *     markFiled, a file still With claims is recorded Filed with insurance (insurer, claim no.,
+ *     today). Each send is written to the Email Log.
  */
 const L = require('./_lib');
+const C = require('./_conditions');   // the Patrol Notifications switch (Off / Owner test / Everyone)
 const { requireCaller } = require('./_auth');
 const M = require('./mva').lib;
 const { arr, sel, airtable } = L;
@@ -50,7 +63,14 @@ const I = { mvaNo: 'fldG5BvvnH14yGk7u', mva: 'fld1AL2ztQYNuwkbJ', lines: 'fld8Es
   files: 'fld93100j7kUUERJY', site: 'fldNp2nuQsRVWaj2j', tc: 'fldiGNJG5EQ6WVdgZ', repair: 'fldSMzdHIvTyavtp8',
   material: 'fldansbiyJAWdHbjW', markup: 'fldBRhI9H1iUnwbYm', admin: 'fldS1Yrnas60enxUS', subtotal: 'fld1BtKHVdQH6dExz',
   hst: 'fldQxiNKdSBPzikhO', total: 'fldquTkZmRQuMEHA2', complete: 'fldKtfJMGadw1suzI', completedBy: 'fld4WTEbSqs0NL9LU',
-  completedAt: 'fldhnsAKP6cqkWVTq', notes: 'fldw4GebVHdhYXMiJ', updatedBy: 'fldVsKPuvCN3jbBnA', updatedAt: 'fldyUmMJRxzSa5aIh' };
+  completedAt: 'fldhnsAKP6cqkWVTq', notes: 'fldw4GebVHdhYXMiJ', updatedBy: 'fldVsKPuvCN3jbBnA', updatedAt: 'fldyUmMJRxzSa5aIh',
+  paperwork: 'fldoSDX2PNWtFnigT', emailLog: 'fldkVGhMVKDUhAHvp' };
+const CLAIMS_STAGES = ['With claims', 'Awaiting approval', 'Filed with insurance', 'Paid'];
+const EMAIL_STAGES = ['With claims', 'Awaiting approval', 'Filed with insurance'];
+const WORKFLOW_SWITCH = 'MVA file workflow';
+const CLAIMS_FROM = process.env.CLAIMS_FROM || process.env.MVA_FROM || 'MRDC Operations Corporation <noreply@mrdc-htra.com>';
+const EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[A-Za-z]{2,}$/;
+const MAX_ATTACH_BYTES = 30 * 1024 * 1024;   // Resend takes 40 MB a message; leave room for the body
 // The accident report fields the invoice reads (api/accident.js A).
 const A = { truck: 'fld0Ehu0B9iUAuktz', arrived: 'fldQyKBFIpkFzAiiP', left: 'fld8jizpsetNlXvY6', items: 'fldVkA60qvqGoK9Zk',
   driver: 'fldTskwroWMBDCjZq', owner: 'fldqH8sRqUBMt8fdS', driverIsOwner: 'fldD9VbHyw04cUmgH', trucking: 'fldwyd11uvJYY06hM',
@@ -102,6 +122,8 @@ function shapeInvoice(rec) {
   const lines = parseJson(f[I.lines], []), third = parseJson(f[I.third], []);
   return { id: rec ? rec.id : null, lines, third, notes: f[I.notes] || '',
     files: arr(f[I.files]).map(a => ({ id: a.id, url: a.url, filename: a.filename, type: a.type || '', size: a.size || 0 })),
+    paperwork: arr(f[I.paperwork]).map(a => ({ id: a.id, url: a.url, filename: a.filename, type: a.type || '', size: a.size || 0 })),
+    emailLog: f[I.emailLog] || '',
     totals: totalsOf(lines, third), complete: !!f[I.complete], completedBy: f[I.completedBy] || '', completedAt: f[I.completedAt] || '',
     updatedBy: f[I.updatedBy] || '', updatedAt: f[I.updatedAt] || '' };
 }
@@ -231,6 +253,61 @@ function prefillFrom(row, ar, rates) {
   return out;
 }
 
+// ── the claim as an email (the claims coordinator's Accident Invoice layout) ───
+const e = v => L.esc(v == null ? '' : String(v)).replace(/"/g, '&quot;');
+const money = n => '$' + (Number(n) || 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+function invoiceHtml(h, inv, o) {
+  o = o || {};
+  const t = inv.totals, td = 'border:1px solid #333;padding:4px 6px;vertical-align:top', th = td + ';background:#eee;text-align:left';
+  const r = ';text-align:right';
+  const km = h.km != null && h.km !== '' ? Number(h.km).toFixed(3) : '';
+  const rows = list => list.map(x => `<tr><td style="${td};width:38%">${e(x[0])}</td><td style="${td}">${e(x[1])}</td></tr>`).join('');
+  const sec = (cat, title) => {
+    const ls = inv.lines.filter(l => l.cat === cat && l.rateId);
+    if (!ls.length && !(cat === 'repair' && inv.third.length)) return '';
+    return `<table style="border-collapse:collapse;width:100%;margin:10px 0"><tr><th style="${th}" colspan="5">${e(title)}</th></tr>` +
+      `<tr><th style="${th}">Expense description</th><th style="${th}">Who / unit</th><th style="${th}${r}">Rate</th><th style="${th}${r}">Hours / items</th><th style="${th}${r}">Cost</th></tr>` +
+      ls.map(l => `<tr><td style="${td}">${e(l.item)}${l.part ? ' (' + e(l.part) + ')' : ''}</td><td style="${td}">${e(l.who)}${l.date ? ' ' + e(l.date) : ''}</td><td style="${td}${r}">${money(l.rate)}</td><td style="${td}${r}">${e(l.qty)}</td><td style="${td}${r}">${money(lineCents(l) / 100)}</td></tr>`).join('') +
+      (cat === 'repair' ? inv.third.map(x => `<tr><td style="${td}" colspan="4">${e(x.vendor)}${x.invoiceNo ? ' (Inv# ' + e(x.invoiceNo) + ')' : ''}${x.note ? ' — ' + e(x.note) : ''}</td><td style="${td}${r}">${money(x.amount)}</td></tr>`).join('') : '') +
+      `<tr><td style="${td}${r}" colspan="4"><b>Total</b></td><td style="${td}${r}"><b>${money(cat === 'repair' ? t.repair : t[cat])}</b></td></tr></table>`;
+  };
+  return `<div style="font-family:Georgia,'Times New Roman',serif;color:#000;max-width:720px;font-size:14px">
+  <table style="border-collapse:collapse;width:100%"><tr><td style="${td};width:30%"><b>MRDC</b><br>Operations Corporation</td>
+    <td style="${td};text-align:center;font-size:20px"><b>ACCIDENT INVOICE</b></td>
+    <td style="${td};width:30%;font-size:12px">203 Black Watch Avenue<br>Oromocto, NB E2V 4L7<br>Phone: 506 357-1240<br>Fax: 506 357-1250</td></tr></table>
+  <table style="border-collapse:collapse;width:100%;margin-top:8px">${rows([['Date', o.date || today()], ['Invoice No.', h.mvaNo], ['Policy No.', h.policy], ['Claim No.', o.claimNo || h.claimNo]])}</table>
+  <table style="border-collapse:collapse;width:100%;margin-top:8px"><tr><th style="${th}" colspan="2">Invoice To:</th></tr>${rows([['Insurer', o.insurer || h.filedInsurer || h.insurer]])}</table>
+  <table style="border-collapse:collapse;width:100%;margin-top:8px"><tr><th style="${th}" colspan="2">Accident Data:</th></tr>${rows([['Date of Incident', h.date], ['Driver', h.driver],
+    ['Vehicle Owner', h.owner], ['Vehicle Type', h.vehicle], ['License Plate No.', h.plate], ['Incident Location', h.route], ['KM Marker', (km + ' ' + (h.direction || '')).trim()],
+    ['Police Officer\'s Name', h.officer], ['Police File No.', h.policeFile]])}</table>
+  <table style="border-collapse:collapse;width:100%;margin-top:8px"><tr><th style="${th}">MRDC Accident and Repair Costs</th><th style="${th}${r}">Amount</th></tr>` +
+    [['Accident Site Response', t.site], ['Traffic Control', t.tc], ['Asset Repair Costs', t.repair], ['Asset Material Costs', t.material], ['Markup on Third Party Costs', t.markup],
+     ['Administration', t.admin], ['Subtotal', t.subtotal], ['HST @ 15%', t.hst]].map(x => `<tr><td style="${td}">${e(x[0])}</td><td style="${td}${r}">${money(x[1])}</td></tr>`).join('') +
+    `<tr><td style="${td}"><b>Total</b></td><td style="${td}${r}"><b>${money(t.total)}</b></td></tr></table>
+  <p style="font-size:12px">HST No: 872059894RT0001. Canada Revenue Agency GST/HST Ruling — June 26, 2009, Case Number 114777: MRDC Operations Corporation is required to collect HST on amounts invoiced to third parties in respect of traffic control services and rehabilitation of the Facility pursuant to section 165.
+  Terms of payment: remittance is due within 20 days from receipt of this invoice. Interest charges of 2% per month (26.2% annually) will be charged on overdue accounts.</p>` +
+    sec('site', 'Accident Site Response (time of accident)') + sec('tc', 'Traffic Control') + sec('repair', 'Asset Repair Costs') + sec('material', 'Asset Material Costs') +
+    (inv.notes ? `<table style="border-collapse:collapse;width:100%;margin:10px 0"><tr><th style="${th}">Facility Repairs</th></tr><tr><td style="${td}">${e(inv.notes).replace(/\n/g, '<br>')}</td></tr></table>` : '') +
+  `</div>`;
+}
+const emails = v => [...new Set(String(v || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean))];
+const stampLine = (who, what) => `${new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Moncton', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).replace(',', '')} — ${who || '?'} — ${what}`;
+/* What goes with the email: the third-party invoices, the claims paperwork and (if asked) the photos
+   in the file. Each by URL (Resend fetches it). Stops before the size limit and says what was left out. */
+function attachmentsFor(inv, photos) {
+  const out = [], left = []; let bytes = 0;
+  const add = (list, tag) => list.forEach(a => {
+    if (!a.url) return;
+    const size = Number(a.size) || 0;
+    if (bytes + size > MAX_ATTACH_BYTES) { left.push(a.filename || tag); return; }
+    bytes += size; out.push({ filename: a.filename || tag, path: a.url });
+  });
+  add(inv.files, 'invoice'); add(inv.paperwork, 'paperwork'); add(photos || [], 'photo.jpg');
+  return { list: out, left, bytes };
+}
+
 // ── the handler ────────────────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
   if (L.cors(req, res)) return;
@@ -250,9 +327,12 @@ module.exports = async function handler(req, res) {
       const inv = shapeInvoice(rec);
       return res.status(200).json({ mva: { id: row.id, mvaNo: row.mvaNo, stage: row.stage, patroller: row.patroller },
         invoice: inv, missing: missingFor(inv), rates: rates.filter(r => r.active), cats: CATS, header: headerOf(row, ar),
-        prefill: prefillFrom(row, ar, rates), edit, admin: !!caller.isAdmin });
+        prefill: prefillFrom(row, ar, rates), edit, admin: !!caller.isAdmin,
+        claims: claimsFor(row, caller) ? { email: EMAIL_STAGES.includes(row.stage), filed: row.stage !== 'With claims' && row.stage !== 'Awaiting approval',
+          insurer: row.filedInsurer || '', claimNo: row.claimNo || '' } : null });
     }
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (['paperwork', 'paperworkRemove', 'email'].includes(body.action)) return claimsAction(row, body, caller, res);
     if (!edit) return res.status(409).json({ error: row.access && row.access.own
       ? 'The accident file has been submitted (' + row.stage + ') — the invoice can only be changed if it is sent back to you.'
       : 'Only the patroller completes the invoice — send the file back with a note if something is wrong.' });
@@ -320,4 +400,76 @@ module.exports = async function handler(req, res) {
     return res.status(e.status && e.status < 500 ? e.status : 500).json({ error: e.message || 'Server error' });
   }
 };
-module.exports._test = { totalsOf, cleanLines, cleanThird, missingFor, prefillFrom, sceneHours, headerOf, ITEM };
+/* The Claims Manager's part (Troy, 2026-10-30). */
+const claimsFor = (row, caller) => !!(row && CLAIMS_STAGES.includes(row.stage) && ((row.access && row.access.claims) || caller.isAdmin));
+async function claimsAction(row, body, caller, res) {
+  if (!claimsFor(row, caller)) return res.status(row.access && (row.access.claims || caller.isAdmin) ? 409 : 403).json({ error: CLAIMS_STAGES.includes(row.stage)
+    ? 'Only the Claims Manager handles the claim.' : 'The claim goes to the Claims Manager once the file is verified (' + row.stage + ').' });
+  const now = new Date().toISOString(), who = caller.name || '';
+  let rec = await invoiceRec(row.mvaNo);
+  if (!rec) return res.status(409).json({ error: 'There is no invoice on this file yet.' });
+  const patch = fields => airtable(`${BASE}/${T_INV}/${rec.id}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true, fields }) });
+  const answer = async extra => res.status(200).json(Object.assign({ invoice: shapeInvoice(await invoiceRec(row.mvaNo)) }, extra || {}));
+  if (body.action === 'paperwork') {
+    if (!body.data) return res.status(400).json({ error: 'data (base64) is required' });
+    await L.uploadAttachment({ base: BASE, recordId: rec.id, fieldId: I.paperwork, filename: body.filename, contentType: body.contentType, data: body.data });
+    return answer();
+  }
+  if (body.action === 'paperworkRemove') {
+    const keep = arr((rec.fields || {})[I.paperwork]).filter(a => a.id !== body.fileId).map(a => ({ id: a.id }));
+    await patch({ [I.paperwork]: keep });
+    return answer();
+  }
+  // email
+  if (!EMAIL_STAGES.includes(row.stage)) return res.status(409).json({ error: 'The claim has been paid — nothing more to send.' });
+  const to = emails(body.to), cc0 = emails(body.cc);
+  if (!to.length) return res.status(400).json({ error: 'Who should it go to? Enter the insurance company\'s email address.' });
+  const bad = [...to, ...cc0].filter(x => !EMAIL_RE.test(x));
+  if (bad.length) return res.status(400).json({ error: 'Not an email address: ' + bad.join(', ') });
+  if (to.length + cc0.length > 10) return res.status(400).json({ error: 'At most 10 addresses.' });
+  const insurer = txt(body.insurer, 200), claimNo = txt(body.claimNo, 100);
+  if (body.markFiled && !insurer) return res.status(400).json({ error: 'The insurance company is needed to record it as filed.' });
+  const inv = shapeInvoice(rec);
+  if (!inv.complete) return res.status(409).json({ error: 'The invoice is not marked complete.' });
+  const t = await M.team({}), mine = t.emailOf(who);
+  const ar = await reportFor(row.mvaNo).catch(() => null);
+  const h = headerOf(row, ar);
+  let photos = [];
+  if (body.photos) { try { photos = ((await M.photosFor(row)).list || []).map(p => ({ url: p.url, filename: p.filename || (p.source + '.jpg'), size: p.size || 0 })); } catch (_) { photos = []; } }
+  const att = attachmentsFor(inv, photos);
+  const msg = txt(body.message, 5000);
+  const subject = `Accident claim ${row.mvaNo}${claimNo ? ' — your claim no. ' + claimNo : ''}${h.policy ? ' — policy ' + h.policy : ''}`;
+  const html = (msg ? `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;white-space:pre-wrap;margin-bottom:16px">${e(msg)}</div>` : '') +
+    invoiceHtml(h, inv, { insurer, claimNo }) +
+    (att.list.length ? `<p style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px;color:#555">Attached: ${att.list.map(a => e(a.filename)).join(', ')}</p>` : '') +
+    (mine ? `<p style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px">${e(who)} · Claims · MRDC Operations Corporation · <a href="mailto:${e(mine)}">${e(mine)}</a></p>` : '');
+  let sw = { id: null, mode: 'Off' };
+  try { sw = await C.switchFor(WORKFLOW_SWITCH); } catch (_) { sw = { id: null, mode: 'Off' }; }
+  if (sw.mode !== 'Everyone' && sw.mode !== 'Owner test')
+    return res.status(409).json({ error: 'Emails from the MVA file are switched off (Patrol Notifications → "MVA file workflow"). Print the claim and email it yourself.' });
+  const cc = [...new Set([...cc0, mine].filter(Boolean))].filter(x => !to.includes(x));
+  let r;
+  if (sw.mode === 'Everyone') r = await L.sendMailDetailed({ to, cc, subject, html, from: CLAIMS_FROM, replyTo: mine || undefined, attachments: att.list });
+  else {
+    let owners = []; try { owners = C.owners(await C.directory()); } catch (_) { owners = []; }
+    const banner = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#FAF0DA;border-left:4px solid #B7791F;padding:12px 16px;margin-bottom:12px">
+      <b>Test.</b> The MVA file workflow is set to <b>Owner test</b>, so only you got this. It would have gone to ${e(to.join(', '))}${cc.length ? ' (cc ' + e(cc.join(', ')) + ')' : ''}.</div>`;
+    r = owners.length ? await L.sendMailDetailed({ to: owners, subject: '[TEST] ' + subject, html: banner + html, from: CLAIMS_FROM, attachments: att.list })
+                      : { sent: [], reason: 'no Owner email on file' };
+  }
+  await C.stampSwitch(sw, `${row.mvaNo}: claim emailed — ${sw.mode} — for ${to.join(', ')}`).catch(() => {});
+  if (!r.sent.length) return res.status(502).json({ error: 'The email did not go out: ' + (r.reason || 'unknown reason') + '. Print the claim and email it yourself.' });
+  const line = stampLine(who, `${sw.mode === 'Everyone' ? 'emailed' : 'Owner test, sent to ' + r.sent.join(', ') + ' instead of'} ${to.join(', ')}${cc.length ? ' cc ' + cc.join(', ') : ''}` +
+    ` · ${att.list.length} attachment${att.list.length === 1 ? '' : 's'}${att.left.length ? ' (left out, too big: ' + att.left.join(', ') + ')' : ''}`);
+  await patch({ [I.emailLog]: (inv.emailLog ? inv.emailLog + '\n' : '') + line });
+  let filed = false;
+  if (body.markFiled && sw.mode === 'Everyone' && ['With claims', 'Awaiting approval'].includes(row.stage)) {
+    const F = M.F, hist = (row.history ? row.history + '\n' : '') + stampLine(who, `filed with ${insurer}${claimNo ? ' (claim ' + claimNo + ')' : ''} — emailed to ${to.join(', ')}`);
+    await airtable(`${BASE}/${encodeURIComponent(M.TABLE)}/${encodeURIComponent(row.id)}`, { method: 'PATCH', body: JSON.stringify({ returnFieldsByFieldId: true,
+      fields: { [F.stage]: 'Filed with insurance', [F.filedDate]: today(), [F.filedInsurer]: insurer, [F.claimNo]: claimNo, [F.filedBy]: who, [F.filedAt]: now, [F.history]: hist } }) });
+    filed = true;
+  }
+  return answer({ sent: { mode: sw.mode, to, cc, sentTo: r.sent, attachments: att.list.length, left: att.left, filed } });
+}
+
+module.exports._test = { invoiceHtml, attachmentsFor, totalsOf, cleanLines, cleanThird, missingFor, prefillFrom, sceneHours, headerOf, ITEM };

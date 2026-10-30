@@ -154,7 +154,9 @@ async function uploadAttachment({ base, recordId, fieldId, filename, contentType
 // afternoon on 2026-08-18 guessing at an empty API key from the outside. This
 // version returns the reason too, so a caller can surface it instead of
 // depending on the platform's log viewer.
-async function sendMailDetailed({ to, subject, html, from }) {
+// cc, replyTo and attachments are optional (2026-10-30: the claims manager emails a claim to the
+// insurer with its invoices attached — Resend fetches each attachment from its `path` URL).
+async function sendMailDetailed({ to, subject, html, from, cc, replyTo, attachments }) {
   const key = process.env.RESEND_API_KEY;
   const recipients = (Array.isArray(to) ? to : String(to || '').split(','))
     .map(s => String(s).trim()).filter(Boolean);
@@ -168,7 +170,8 @@ async function sendMailDetailed({ to, subject, html, from }) {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: fromAddr, to: recipients, subject, html }),
+      body: JSON.stringify(Object.assign({ from: fromAddr, to: recipients, subject, html },
+        cc && cc.length ? { cc } : {}, replyTo ? { reply_to: replyTo } : {}, attachments && attachments.length ? { attachments } : {})),
     });
     if (!r.ok) {
       const body = await r.text().catch(() => '');
