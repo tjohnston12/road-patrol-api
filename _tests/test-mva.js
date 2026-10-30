@@ -54,6 +54,8 @@ function answer(rec, byId) {
 const T_MVA = 'tblFnoVfyA9nSEOwk', T_FOLDER = 'tbl9VS7Ggu8UKCeXU';
 let AR_PATCHES = [];
 let SCENE_DB = [], FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_RECS = [];
+// What api/claim.js does when the invoice is marked complete: the folder's Claim invoice row is ticked.
+const tickInvoice = no => { const rec = { id: 'recF' + String(++fseq).padStart(13, '0'), fields: { fldZ6jtW2k7LqxPe0: no, fldLCZxKhdozk8fhk: 'Claim invoice', fldUjL1uELhKd5O3P: true, fldv9yBGj0fMQglnx: 'Tom Gibson', fldEv5ndR6kFEojtP: '2026-10-30T12:00:00.000Z' } }; FOLDER_DB[rec.id] = rec; };
 // The Employees directory and MVA File Roles, as the route reads them.
 let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
   { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
@@ -174,9 +176,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
 
   /* 3 — the accident file folder */
   ok('the email lists the accident file folder', /Accident file folder — 2026-10-06-303\.000-EB/.test(m.html));
-  for (const item of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
-                      'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
+  // Cleaned up 2026-10-30: the accident report holds the photos; the invoice replaces the work summary.
+  for (const item of ['Accident Report', 'Claim invoice', 'Traffic control sheets'])
     ok(`…including ${item}`, m.html.includes(item));
+  for (const item of ['Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs', 'Copy of the time sheets', 'Accident Claim Checklist'])
+    ok(`…and no longer ${item}`, !m.html.includes(item));
   ok('…and names who builds it', /Tom Gibson builds and completes the folder/.test(m.html));
 
   /* Troy, 2026-10-08: all routes; route and division required */
@@ -308,11 +312,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   ok('the email links to the folder', (mails[0] || {}).html.includes('mvas.html?id=' + mid));
   r = await call('GET', null, { id: mid });
   eq('the patroller opens their MVA', r.status, 200);
-  eq('…with the seven folder items, none done', [r.json.folder.total, r.json.folder.done, r.json.folder.items.map(i => i.item)],
-     [7, 0, ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
-             'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist']]);
+  eq('…with the three folder items, none done', [r.json.folder.total, r.json.folder.done, r.json.folder.items.map(i => i.item)],
+     [3, 0, ['Accident Report', 'Claim invoice', 'Traffic control sheets']]);
+  ok('…the claim invoice is marked as the invoice item (ticked by the invoice, not by hand)', r.json.folder.items[1].invoice === true && !r.json.folder.items[0].invoice);
   r = await call('GET', null, {});
-  eq('the list carries folder progress', [r.json.rows.length, r.json.rows[0].folderDone, r.json.rows[0].folderTotal], [1, 0, 7]);
+  eq('the list carries folder progress', [r.json.rows.length, r.json.rows[0].folderDone, r.json.rows[0].folderTotal], [1, 0, 3]);
 
   session = S('Employee', 'Patroller', 'James Rodey');
   r = await call('GET', null, { id: mid });
@@ -342,20 +346,26 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   ok('unticking clears who and when', !r.json.folder.items[0].done && !r.json.folder.items[0].doneBy);
   eq('…still one row', Object.keys(FOLDER_DB).length, 1);
   r = await call('POST', { action: 'folderFile', id: mid, item: 'Traffic control sheets', data: 'JVBERi0=', filename: 'tc.pdf', contentType: 'application/pdf' });
-  eq('a file goes onto that item\'s row', [uploads.length, uploads[0] && uploads[0].fieldId, r.json.folder.items[4].files.map(f => f.filename)],
+  eq('a file goes onto that item\'s row', [uploads.length, uploads[0] && uploads[0].fieldId, r.json.folder.items[2].files.map(f => f.filename)],
      [1, 'fldX1QOIze3KlNiT1', ['tc.pdf']]);
   r = await call('POST', { action: 'folderFileRemove', id: mid, item: 'Traffic control sheets', fileId: 'att1' });
-  eq('…and can be removed', r.json.folder.items[4].files.length, 0);
+  eq('…and can be removed', r.json.folder.items[2].files.length, 0);
+  r = await call('POST', { action: 'folder', id: mid, item: 'Claim invoice', done: true });
+  eq('the claim invoice cannot be ticked by hand', [r.status, /marking the invoice complete/.test(r.json.error)], [400, true]);
+  r = await call('POST', { action: 'folderFile', id: mid, item: 'Accident photos and damages', data: 'eA==', filename: 'x.jpg', contentType: 'image/jpeg' });
+  eq('a removed item takes no files', r.status, 400);
 
   /* 9 — the route (2026-10-06): patroller → manager verifies → Operations Manager
      approves → Claims Manager files with insurance → paid. Send back at any step. */
   const P = (step, extra) => call('PATCH', Object.assign({ id: mid, step }, extra || {}));
   r = await P('submit');
   eq('submit with the folder incomplete: 409', r.status, 409);
-  ok('…names the items, the photos and the scene clear', (r.json.missing || []).length === 10 && /Scene clear/.test(r.json.error) && /Photos of the accident/.test(r.json.error) && /Photos of the completed repairs \(at least one\)/.test(r.json.error), r.json.error);
-  for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
-                    'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
+  ok('…names the items, the photos and the scene clear', (r.json.missing || []).length === 6 && /Claim invoice/.test(r.json.error) && /Scene clear/.test(r.json.error) && /Photos of the accident/.test(r.json.error) && /Photos of the completed repairs \(at least one/.test(r.json.error), r.json.error);
+  for (const it of ['Accident Report', 'Traffic control sheets'])
     await call('POST', { action: 'folder', id: mid, item: it, done: true });
+  r = await P('submit');
+  ok('the claim invoice not complete: it is still missing', r.status === 409 && (r.json.missing || []).includes('Claim invoice'), JSON.stringify(r.json.missing));
+  tickInvoice('2026-10-06-303.000-EB');
   r = await P('submit');
   ok('items ticked, no photos, no scene clear: the scene clear is still missing', r.status === 409 && (r.json.missing || []).includes('Scene clear (send it from the MVA)'), JSON.stringify(r.json.missing));
   r = await call('GET', null, { id: mid });
@@ -372,12 +382,12 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   // Troy, 2026-10-23: the accident report's "I did not get photos" lifts the accident-photo check; repairs stay.
   AR_RECS = [{ id: 'recAR0', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldYe5TNVP902IMdM: true } }];
   r = await P('submit');
-  eq('"I did not get photos" on the report: only the repair photo is still missing', [r.status, r.json.missing], [409, ['Photos of the completed repairs (at least one)']]);
-  AR_RECS = [];
-  await call('POST', { action: 'folderFile', id: mid, item: 'Accident photos and damages', data: 'eA==', filename: 'scene.jpg', contentType: 'image/jpeg' });
+  eq('"I did not get photos" on the report: only the repair photo is still missing', [r.status, r.json.missing], [409, ['Photos of the completed repairs (at least one — Proof of repairs on the accident report)']]);
+  AR_RECS = [{ id: 'recAR1', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldZpLjNw1PIiS6Cj: [{ id: 'attS', url: 'https://x/scene.jpg', filename: 'scene.jpg', type: 'image/jpeg' }] } }];
   r = await P('submit');
   ok('an accident photo but no repair photo: still 409', r.status === 409 && /completed repairs/.test(r.json.error) && !/accident and damages/.test(r.json.error));
-  AR_RECS = [{ id: 'recAR', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldmEpRePHQOxRBkv: [{ id: 'attR', url: 'https://x/fixed.jpg', filename: 'fixed.jpg', type: 'image/jpeg' }] } }];
+  AR_RECS = [{ id: 'recAR', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldZpLjNw1PIiS6Cj: [{ id: 'attS', url: 'https://x/scene.jpg', filename: 'scene.jpg', type: 'image/jpeg' }],
+    fldmEpRePHQOxRBkv: [{ id: 'attR', url: 'https://x/fixed.jpg', filename: 'fixed.jpg', type: 'image/jpeg' }] } }];
   r = await call('GET', null, { id: mid });
   eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
   // Troy, 2026-10-21: the notification itself, as emailed, in the file.
@@ -385,13 +395,19 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   ok('…the time in New Brunswick, not UTC (16:56 UTC on 6 Oct = 13:56 ADT)', /When<\/td>[\s\S]{0,120}2026-10-06 13:56/.test(r.json.notification.html), (r.json.notification.html.match(/When<\/td>[\s\S]{0,120}/) || [''])[0]);
   ok('…with the GPS line (Not recorded when blank)', /GPS<\/td>[\s\S]{0,120}(Not recorded|\d)/.test(r.json.notification.html));
   eq('the photos panel gathers every photo in the file', [r.json.photos.accident, r.json.photos.repair, r.json.photos.list.map(p => p.source)],
-     [1, 1, ['Accident report — repairs', 'Folder — Accident photos and damages']]);
+     [1, 1, ['Accident report — accident', 'Accident report — repairs']]);
+  // A folder row saved under a removed name (before 2026-10-30) keeps showing its photos, and they still count.
+  FOLDER_DB.recLegacy = { id: 'recLegacy', fields: { fldZ6jtW2k7LqxPe0: '2026-10-06-303.000-EB', fldLCZxKhdozk8fhk: 'Accident photos and damages',
+    fldX1QOIze3KlNiT1: [{ id: 'attOld', url: 'https://x/old.jpg', filename: 'old.jpg', type: 'image/jpeg' }] } };
+  r = await call('GET', null, { id: mid });
+  eq('an old folder row\'s photos still show and count', [r.json.photos.accident, r.json.photos.list.map(p => p.source).pop(), r.json.folder.total], [2, 'Folder — Accident photos and damages', 3]);
+  delete FOLDER_DB.recLegacy;
   VEH_RECS = [{ id: 'recV3', fields: { fldwfUp29kQs8NQI7: '2026-10-06-303.000-EB-AR-V3', fldCOloDspNrByuT7: 3, fld3RVNUJQDkjFxpi: [{ id: 'attI3', url: 'https://x/i3.jpg' }] } },
     { id: 'recV2', fields: { fldwfUp29kQs8NQI7: '2026-10-06-303.000-EB-AR-V2', fldCOloDspNrByuT7: 2, fld8jYrCXrGqsSm9N: [{ id: 'attL2', url: 'https://x/l2.jpg' }], fldl5T1V1XHzV5USf: [{ id: 'attP2', url: 'https://x/p2.jpg' }] } },
     { id: 'recVX', fields: { fldwfUp29kQs8NQI7: '2026-10-06-999.000-WB-AR-V2', fldCOloDspNrByuT7: 2, fld8jYrCXrGqsSm9N: [{ id: 'attX', url: 'https://x/x.jpg' }] } }];
   r = await call('GET', null, { id: mid });
   eq('…with vehicle 2 and 3\'s photos, in order, and not another MVA\'s', r.json.photos.list.map(p => p.source),
-     ['Accident report — repairs', 'Vehicle 2 — driver\'s licence', 'Vehicle 2 — licence plate', 'Vehicle 3 — insurance card', 'Folder — Accident photos and damages']);
+     ['Accident report — accident', 'Accident report — repairs', 'Vehicle 2 — driver\'s licence', 'Vehicle 2 — licence plate', 'Vehicle 3 — insurance card']);
   VEH_RECS = [];
   mails = [];
   session = S('Employee', 'Patroller', 'James Rodey');
@@ -425,7 +441,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('…the patroller is emailed', mails[0] && mails[0].to, ['tgibson@mrdc.ca']);
   ok('…and it is in the history', /Derek Melanson — sent back: No photo of the guiderail ends/.test(r.json.row.history));
   session = S('Employee', 'Patroller', 'Tom Gibson');
-  r = await call('POST', { action: 'folder', id: mid, item: 'Accident Claim Checklist', notes: 'Added the ends' });
+  r = await call('POST', { action: 'folder', id: mid, item: 'Traffic control sheets', notes: 'Added the ends' });
   eq('sent back: the patroller can change it again', r.status, 200);
   r = await P('submit');
   eq('…and resubmit (the note is cleared)', [r.json.row.stage, r.json.row.sentBackNote], ['Awaiting verification', '']);
@@ -464,12 +480,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   reset(); stamps = []; WF = { id: 'recSwWf', mode: 'Owner test' };
   session = S('Employee', 'Patroller', 'Tom Gibson');
   r = await call('POST', BASE_MVA); const m2 = r.json.row.id; mails = [];
-  for (const it of ['Accident Report', 'Accident Claim Work Summary', 'Accident photos and damages', 'Photos of the completed repairs',
-                    'Traffic control sheets', 'Copy of the time sheets', 'Accident Claim Checklist'])
+  for (const it of ['Accident Report', 'Traffic control sheets'])
     await call('POST', { action: 'folder', id: m2, item: it, done: true });
-  await call('POST', { action: 'folderFile', id: m2, item: 'Accident photos and damages', data: 'eA==', filename: 'a.jpg', contentType: 'image/jpeg' });
-  await call('POST', { action: 'folderFile', id: m2, item: 'Photos of the completed repairs', data: 'eA==', filename: 'b.jpg', contentType: 'image/jpeg' });
-  AR_RECS = [];
+  tickInvoice((await call('GET', null, { id: m2 })).json.row.mvaNo);
+  AR_RECS = [{ id: 'recAR2', fields: { fldZpLjNw1PIiS6Cj: [{ id: 'a1', url: 'https://x/a.jpg', filename: 'a.jpg', type: 'image/jpeg' }],
+    fldmEpRePHQOxRBkv: [{ id: 'b1', url: 'https://x/b.jpg', filename: 'b.jpg', type: 'image/jpeg' }] } }];
   SCENE_DB.push({ mvaNo: (await call('GET', null, { id: m2 })).json.row.mvaNo, time: '2026-10-06T18:30:00.000Z', by: 'Tom Gibson' });
   mails = [];
   r = await call('PATCH', { id: m2, step: 'submit' });

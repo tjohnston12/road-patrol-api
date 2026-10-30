@@ -164,7 +164,7 @@ const ON = { arrived: '2026-10-06T18:05:00.000Z', departed: '2026-10-06T19:30:00
     const items = (row, recs) => ML.folderView(row, recs || []).items.map(i => i.item);
     ok('the folder lists it only when an investigation is required', items({ invRequired: true }).slice(-1)[0] === 'Investigation report' && !items({ invRequired: false }).includes('Investigation report'));
     const v = ML.folderView({ invRequired: true }, []);
-    eq('…not ticked until it is submitted, and marked automatic', [v.items.slice(-1)[0].done, v.items.slice(-1)[0].auto, v.total], [false, true, 8]);
+    eq('…not ticked until it is submitted, and marked automatic', [v.items.slice(-1)[0].done, v.items.slice(-1)[0].auto, v.total], [false, true, 4]);   // 3 folder items since 2026-10-30, plus the investigation
     ok('…not an item that can be ticked by hand', !ML.ITEMS.includes('Investigation report')); }
   // …and its police and damage details reach the accident report page, which fills the empty boxes.
   { const acc = require(path.join(__dirname, '..', 'api', 'accident.js'));
