@@ -409,16 +409,21 @@ function testBanner(real) {
 // The items are the Accident Claim Checklist (3.1.2 Accident Claim Work Summary).
 // The Item names are stored on each MVA File Folder row — renaming one orphans
 // the rows already saved under the old name.
+/* Cleaned up 2026-10-30 (Troy: "clean up what is in the 'file' to exclude things that are
+   already part of the accident report, for example photos"). Out: Accident photos and damages
+   and Photos of the completed repairs (the accident report and its Proof of repairs hold them,
+   and the photo rules at submit are unchanged), the Accident Claim Checklist (the Submit →
+   Verify → Approve sign-offs record who and when), the Accident Claim Work Summary (replaced by
+   the Claim invoice, api/claim.js) and Copy of the time sheets (the invoice reads the hours from
+   the timesheets). Rows saved under the old names stay in the table; their photos still show. */
+const CLAIM_ITEM = 'Claim invoice';
 const FOLDER = [
-  { item: 'Accident Report',                 hint: 'The on-scene report: driver, vehicle, insurance and damages.' },
-  { item: 'Accident Claim Work Summary',     hint: 'Response hours and equipment, traffic control and repair labour.' },
-  { item: 'Accident photos and damages',     hint: '' },
-  { item: 'Photos of the completed repairs', hint: '' },
-  { item: 'Traffic control sheets',          hint: '' },
-  { item: 'Copy of the time sheets',         hint: '' },
-  { item: 'Accident Claim Checklist',        hint: 'Signed by the patroller and the Area Manager.' },
+  { item: 'Accident Report',        hint: 'The on-scene report: driver, vehicle, insurance, damages and photos — and the Proof of repairs once the repairs are done.' },
+  { item: CLAIM_ITEM,               hint: 'Site response, traffic control, repairs, materials and third-party invoices. Ticked when the invoice is marked complete.', auto: true },
+  { item: 'Traffic control sheets', hint: '' },
 ];
 const ITEMS = FOLDER.map(x => x.item);
+const AUTO_ITEMS = FOLDER.filter(x => x.auto).map(x => x.item);
 /* The investigation report (Troy, 2026-10-22: put it in the accident file). In the folder only when
    the MVA needs one (Investigation Required — a hit & run) or one has been ticked. It is ticked by
    submitting the investigation report (mva-forms.js), never by hand, so it is not in ITEMS. */
@@ -479,7 +484,7 @@ function sceneView(list) { const last = list[0]; return last ? { sent: true, tim
 // The folder as the page shows it: every item, in order, saved or not.
 function folderView(row, recs) {
   const by = {}; for (const r of recs) { const it = shapeItem(r); if (ITEMS.includes(it.item) || it.item === INV_ITEM) by[it.item] = it; }
-  const items = FOLDER.map(x => Object.assign({ item: x.item, hint: x.hint, done: false, files: [], notes: '' }, by[x.item] || {}, { hint: x.hint }));
+  const items = FOLDER.map(x => Object.assign({ item: x.item, hint: x.hint, done: false, files: [], notes: '' }, by[x.item] || {}, { hint: x.hint }, x.auto ? { invoice: true } : {}));
   if ((row && row.invRequired) || by[INV_ITEM])
     items.push(Object.assign({ item: INV_ITEM, done: false, files: [], notes: '' }, by[INV_ITEM] || {}, { hint: INV_HINT, auto: true }));
   return { items, done: items.filter(i => i.done).length, total: items.length };
@@ -710,6 +715,8 @@ module.exports = async function handler(req, res) {
       const row = await loadOwned(body.id, caller);
       if (!row) return res.status(404).json(NOT_FOUND);
       if (!ITEMS.includes(body.item)) return res.status(400).json({ error: 'Unknown folder item' });
+      // The claim invoice is ticked by marking the invoice complete (api/claim.js), never by hand.
+      if (AUTO_ITEMS.includes(body.item)) return res.status(400).json({ error: 'The ' + body.item.toLowerCase() + ' is ticked by marking the invoice complete.' });
       if (!canEdit(row))
         return res.status(409).json({ error: row.access.own ? 'The accident file has been submitted (' + row.stage + ') — it can only be changed if it is sent back to you.'
                                                             : 'Only the patroller builds the folder — send it back with a note if something is missing.' });
@@ -964,7 +971,7 @@ async function step(row, body, caller, ctx, res) {
     const missing = v.items.filter(i => !i.done).map(i => i.item);
     const ph = await photosFor(row);
     if (!ph.accident && !ph.noPhotos) missing.push('Photos of the accident and damages (at least one)');
-    if (!ph.repair) missing.push('Photos of the completed repairs (at least one)');
+    if (!ph.repair) missing.push('Photos of the completed repairs (at least one — Proof of repairs on the accident report)');
     if (!(await sceneClearsFor(row.mvaNo)).length) missing.push('Scene clear (send it from the MVA)');
     if (missing.length) return res.status(409).json({ error: 'Not ready to submit: ' + missing.join(', '), missing });
     const verifier = verifierName(row, t);
@@ -1026,4 +1033,4 @@ async function step(row, body, caller, ctx, res) {
 
 // Shared with api/accident.js (the Accident Report + Proof of Repairs, 2026-10-06):
 // the same ownership rule and the same folder rows.
-module.exports.lib = { recentMvas, BASE, TABLE, F, FF, FOLDER, ITEMS, INV_ITEM, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
+module.exports.lib = { recentMvas, BASE, TABLE, F, FF, FOLDER, ITEMS, AUTO_ITEMS, CLAIM_ITEM, INV_ITEM, NOT_FOUND, STAGES, EDITABLE, shape, ownsMva, loadOwned, canEdit, team, accessFor, folderRows, folderView, upsertItem, photosFor };
