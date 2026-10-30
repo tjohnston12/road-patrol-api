@@ -58,8 +58,9 @@ let SCENE_DB = [], FOLDER_DB = {}, fseq = 0, uploads = [], AR_RECS = [], VEH_REC
 const tickInvoice = no => { const rec = { id: 'recF' + String(++fseq).padStart(13, '0'), fields: { fldZ6jtW2k7LqxPe0: no, fldLCZxKhdozk8fhk: 'Claim invoice', fldUjL1uELhKd5O3P: true, fldv9yBGj0fMQglnx: 'Tom Gibson', fldEv5ndR6kFEojtP: '2026-10-30T12:00:00.000Z' } }; FOLDER_DB[rec.id] = rec; };
 // The Employees directory and MVA File Roles, as the route reads them.
 let EMP = [{ name: 'Tom Gibson', email: 'tgibson@mrdc.ca', manager: 'Derek Melanson' }, { name: 'Derek Melanson', email: 'oromocto@mrdc.ca' },
-  { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
-let ROLES = [['Operations Manager', 'Michael Park'], ['Claims Manager', 'Jay Mcinnis']];
+  { name: 'Michael Park', email: 'mpark@mrdc.ca' }, { name: 'Jay Mcinnis', email: 'jmcinnis@mrdc.ca' }, { name: 'Roger Cormier', email: 'rivergladepatrol@mrdc.ca' }, { name: 'James Rodey', email: 'jrodey@mrdc.ca', manager: 'Derek Melanson' }];
+// 2026-10-30: the approve step is gone; Derek (Western) and Roger (Eastern) verify, then Jay.
+let ROLES = [['Operations Manager', 'Michael Park'], ['Claims Manager', 'Jay Mcinnis'], ['Verifier - Western', 'Derek Melanson'], ['Verifier - Eastern', 'Roger Cormier']];
 const airtable = async (p, opt = {}) => {
   const url = new URL('https://api.airtable.com/v0/' + p);
   const body = opt.body ? JSON.parse(opt.body) : null;
@@ -389,7 +390,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   AR_RECS = [{ id: 'recAR', fields: { fldK8gqs6PfZAXNs9: '2026-10-06-303.000-EB-AR', fldZpLjNw1PIiS6Cj: [{ id: 'attS', url: 'https://x/scene.jpg', filename: 'scene.jpg', type: 'image/jpeg' }],
     fldmEpRePHQOxRBkv: [{ id: 'attR', url: 'https://x/fixed.jpg', filename: 'fixed.jpg', type: 'image/jpeg' }] } }];
   r = await call('GET', null, { id: mid });
-  eq('the file carries who approves and who handles claims', r.json.roles, { ops: 'Michael Park', claims: 'Jay Mcinnis' });
+  eq('the file carries who verifies and who handles claims', r.json.roles, { claims: 'Jay Mcinnis', verifiers: { Western: 'Derek Melanson', Eastern: 'Roger Cormier' } });
   // Troy, 2026-10-21: the notification itself, as emailed, in the file.
   ok('the file carries the notification as emailed', r.json.notification && /MVA Notification — 2026-10-06-303\.000-EB/.test(r.json.notification.html) && /^MVA 2026-10-06-303\.000-EB/.test(r.json.notification.subject) && 'sentTo' in r.json.notification && 'sentAt' in r.json.notification, JSON.stringify(r.json.notification && r.json.notification.subject));
   ok('…the time in New Brunswick, not UTC (16:56 UTC on 6 Oct = 13:56 ADT)', /When<\/td>[\s\S]{0,120}2026-10-06 13:56/.test(r.json.notification.html), (r.json.notification.html.match(/When<\/td>[\s\S]{0,120}/) || [''])[0]);
@@ -424,10 +425,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   eq('…nor verify it himself', r.status, 403);
 
   session = S('Employee', 'Supervisor', 'Michael Park');
-  r = await P('approve');
-  eq('the approver cannot approve before it is verified', r.status, 409);
   r = await P('verify');
-  eq('…nor verify for the patroller\'s manager', r.status, 403);
+  eq('Mike Park no longer has a step: he cannot verify', r.status, 404);
+  session = S('Employee', 'User', 'Jay Mcinnis');
+  r = await P('verify');
+  eq('…nor can the claims manager', r.status, 403);
   session = S('Employee', 'Supervisor', 'Derek Melanson');
   r = await call('GET', null, {});
   eq('the manager sees it in his list, asked to verify', r.json.rows.map(x => [x.mvaNo, x.access.action]), [['2026-10-06-303.000-EB', 'verify']]);
@@ -449,16 +451,11 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   session = S('Employee', 'Supervisor', 'Derek Melanson');
   mails = [];
   r = await P('verify');
-  eq('the manager verifies', [r.status, r.json.row.stage, r.json.row.verifiedBy], [200, 'Awaiting approval', 'Derek Melanson']);
-  eq('…the Operations Manager is emailed', mails[0] && mails[0].to, ['mpark@mrdc.ca']);
-  session = S('Employee', 'User', 'Jay Mcinnis');
-  r = await P('approve');
-  eq('the claims manager cannot approve', r.status, 403);
-  session = S('Employee', 'Supervisor', 'Michael Park');
-  mails = [];
-  r = await P('approve');
-  eq('Mike Park approves', [r.status, r.json.row.stage, r.json.row.approvedBy], [200, 'With claims', 'Michael Park']);
+  eq('Derek verifies: it goes straight to claims (no approve step)', [r.status, r.json.row.stage, r.json.row.verifiedBy], [200, 'With claims', 'Derek Melanson']);
   eq('…the Claims Manager is emailed', mails[0] && mails[0].to, ['jmcinnis@mrdc.ca']);
+  ok('…and the history says it went to claims', /Derek Melanson — verified — sent to Jay Mcinnis/.test(r.json.row.history), r.json.row.history);
+  r = await P('approve');
+  ok('the approve step is refused, saying where verified files go', r.status === 409 && /no approve step/.test(r.json.error), JSON.stringify(r.json));
   r = await P('filed', { filed: { date: '2026-10-20', insurer: 'Intact' } });
   eq('only the claims manager files it', r.status, 403);
 
@@ -474,7 +471,7 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
      [200, 'Filed with insurance', 'Intact', 'C-1', 'Jay Mcinnis']);
   r = await P('paid', { paid: { date: '2026-11-01', amount: '4210.55' } });
   eq('…and records the payment', [r.status, r.json.row.stage, r.json.row.paidDate, r.json.row.paidAmount], [200, 'Paid', '2026-11-01', 4210.55]);
-  ok('the history reads in order', /submitted[\s\S]*sent back[\s\S]*submitted[\s\S]*verified[\s\S]*approved[\s\S]*filed with Intact \(claim C-1\)[\s\S]*payment received \$4210\.55/.test(r.json.row.history), r.json.row.history);
+  ok('the history reads in order', /submitted[\s\S]*sent back[\s\S]*submitted[\s\S]*verified[\s\S]*filed with Intact \(claim C-1\)[\s\S]*payment received \$4210\.55/.test(r.json.row.history), r.json.row.history);
 
   /* 10 — email through the workflow switch */
   reset(); stamps = []; WF = { id: 'recSwWf', mode: 'Owner test' };
@@ -494,7 +491,22 @@ const BASE_MVA = { date: '2026-10-06', occurredAt: '2026-10-06T16:56:00.000Z', k
   EMP = EMP.map(e => e.name === 'Tom Gibson' ? Object.assign({}, e, { manager: '' }) : e);
   reset(); r = await call('POST', BASE_MVA);
   r = await call('GET', null, { id: r.json.row.id });
-  eq('no manager on file: the Operations Manager verifies', r.json.row.verifier, 'Michael Park');
+  eq('Western: Derek verifies, manager or not', r.json.row.verifier, 'Derek Melanson');
+  reset(); r = await call('POST', { ...BASE_MVA, division: 'Eastern' });
+  const east = r.json.row.id;
+  r = await call('GET', null, { id: east });
+  eq('Eastern: Roger verifies', r.json.row.verifier, 'Roger Cormier');
+  for (const it of ['Accident Report', 'Traffic control sheets']) await call('POST', { action: 'folder', id: east, item: it, done: true });
+  tickInvoice(r.json.row.mvaNo); SCENE_DB.push({ mvaNo: r.json.row.mvaNo, time: '2026-10-06T18:30:00.000Z', by: 'Tom Gibson' }); mails = [];
+  AR_RECS = [{ id: 'recAR3', fields: { fldZpLjNw1PIiS6Cj: [{ id: 'a1', url: 'https://x/a.jpg', filename: 'a.jpg', type: 'image/jpeg' }], fldmEpRePHQOxRBkv: [{ id: 'b1', url: 'https://x/b.jpg', filename: 'b.jpg', type: 'image/jpeg' }] } }];
+  r = await call('PATCH', { id: east, step: 'submit' });
+  eq('…the Eastern file is sent to Roger to verify', [r.status, mails[0] && mails[0].to], [200, ['rivergladepatrol@mrdc.ca']]);
+  session = S('Employee', 'Supervisor', 'Derek Melanson');
+  r = await call('GET', null, {});
+  eq('Derek sees the Eastern file too, and may verify it (either of them)', r.json.rows.map(x => [x.verifier, x.access.action]), [['Roger Cormier', 'verify']]);
+  r = await call('PATCH', { id: east, step: 'verify' });
+  eq("…he verifies it for Roger", [r.status, r.json.row && r.json.row.stage], [200, 'With claims']);
+  session = S('Employee', 'Patroller', 'Tom Gibson');
   EMP = EMP.map(e => e.name === 'Tom Gibson' ? Object.assign({}, e, { manager: 'Derek Melanson' }) : e);
 
   /* 11 — recent MVAs for the Timesheets picker (2026-10-08). Operators called in for

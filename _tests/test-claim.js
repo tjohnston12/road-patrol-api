@@ -17,6 +17,7 @@ const libPath = path.join(__dirname, '..', 'api', '_lib.js');
 const authPath = path.join(__dirname, '..', 'api', '_auth.js');
 const mvaPath = path.join(__dirname, '..', 'api', 'mva.js');
 const CLAIM = path.join(__dirname, '..', 'api', 'claim.js');
+const condPath = path.join(__dirname, '..', 'api', '_conditions.js');
 
 let pass = 0, fail = 0; const failures = [];
 const ok = (n, c, x) => { if (c) pass++; else { fail++; failures.push(n + (x !== undefined ? ` — ${x}` : '')); } };
@@ -52,12 +53,19 @@ const airtable = async (p, opt = {}) => {
       if (body.fields.fld93100j7kUUERJY) body.fields.fld93100j7kUUERJY = body.fields.fld93100j7kUUERJY.map(a => was.find(w => w.id === a.id) || a);   // Airtable keeps a kept attachment's details
       Object.assign(INV[id].fields, body.fields); for (const [k, v] of Object.entries(body.fields)) if (v === null) delete INV[id].fields[k]; return JSON.parse(JSON.stringify(INV[id])); }
   }
+  if (table === 'tblFnoVfyA9nSEOwk' && m === 'PATCH') { MVA_PATCHES.push(body.fields); return { id, fields: body.fields }; }
   throw new Error('unexpected ' + m + ' ' + table);
 };
+let MVA_PATCHES = [], MAILS = [], MAIL_FAIL = '', WF = { id: 'recWf', mode: 'Everyone' }, STAMPS = [];
 require.cache[libPath] = { id: libPath, filename: libPath, loaded: true, exports: {
   PAT: 'stub', airtable, arr: x => (Array.isArray(x) ? x : x == null || x === '' ? [] : [x]), sel: x => (x && x.name) || x || '',
   cors: () => false, parseBody: req => req.body || {},
-  uploadAttachment: async (o) => { uploads.push(o); const r = INV[o.recordId]; (r.fields.fld93100j7kUUERJY = r.fields.fld93100j7kUUERJY || []).push({ id: 'att' + uploads.length, url: 'https://x/' + o.filename, filename: o.filename, type: o.contentType }); },
+  esc: s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])),
+  sendMailDetailed: async (o) => { MAILS.push(o); return MAIL_FAIL ? { sent: [], reason: MAIL_FAIL } : { sent: o.to, reason: '' }; },
+  uploadAttachment: async (o) => { uploads.push(o); const r = INV[o.recordId]; (r.fields[o.fieldId] = r.fields[o.fieldId] || []).push({ id: 'att' + uploads.length, url: 'https://x/' + o.filename, filename: o.filename, type: o.contentType, size: o.size || 1000 }); },
+} };
+require.cache[condPath] = { id: condPath, filename: condPath, loaded: true, exports: {
+  switchFor: async () => WF, directory: async () => ({}), owners: () => ['TJohnston@mrdc.ca'], stampSwitch: async (sw, t) => { STAMPS.push(t); },
 } };
 let session = null;
 require.cache[authPath] = { id: authPath, filename: authPath, loaded: true, exports: {
@@ -70,10 +78,13 @@ let MVA = { id: 'recMVA0000000001', mvaNo: '2025-02-04-331.000-WB', stage: 'Open
 const access = () => {
   const me = session && session.name;
   const own = me === MVA.patroller, admin = !!(session && session.isAdmin), reviewer = me === 'Derek Melanson' || me === 'Jay Mcinnis';
-  return { own, admin, view: own || admin || reviewer, edit: admin || (own && ['Open', 'Sent back'].includes(MVA.stage)) };
+  return { own, admin, claims: me === 'Jay Mcinnis', view: own || admin || reviewer, edit: admin || (own && ['Open', 'Sent back'].includes(MVA.stage)) };
 };
 require.cache[mvaPath] = { id: mvaPath, filename: mvaPath, loaded: true, exports: { lib: {
-  BASE: 'appMKaiabPAPx3JaV', FF, NOT_FOUND: { error: 'MVA not found' },
+  BASE: 'appMKaiabPAPx3JaV', FF, NOT_FOUND: { error: 'MVA not found' }, TABLE: 'tblFnoVfyA9nSEOwk',
+  F: { stage: 'fldelaGXvgjkSNxpH', filedDate: 'fldIUbZxpDiRFY4VC', filedInsurer: 'fld5cVD0rOTNZ35l9', claimNo: 'fldPuYIFTuu8A59pz', filedBy: 'fldjIytSPIpJDAhr8', filedAt: 'fld9iUoLpAiaNRU7x', history: 'fldGYosJk4ajH70iq' },
+  team: async () => ({ emailOf: n => ({ 'Jay Mcinnis': 'jmcinnis@mrdc.ca', 'Troy Johnston': 'TJohnston@mrdc.ca' }[n] || '') }),
+  photosFor: async () => ({ list: [{ source: 'Accident report — accident', url: 'https://x/scene.jpg', filename: 'scene.jpg' }, { source: 'Accident report — repairs', url: 'https://x/fixed.jpg', filename: 'fixed.jpg' }] }),
   loadOwned: async (id) => { if (id !== MVA.id) return null; const a = access(); return a.view ? Object.assign({}, MVA, { access: a }) : null; },
   canEdit: row => !!(row && row.access && row.access.edit),
   upsertItem: async (row, item, fields) => { ticks.push({ item, done: fields[FF.done], by: fields[FF.doneBy], notes: fields[FF.notes] }); return { id: 'recF' }; },
@@ -220,6 +231,74 @@ const save = (lines, third, notes) => call('POST', { mva: Q.mva, action: 'save',
   MVA.stage = 'With claims'; session = S('Troy Johnston', true);
   eq('an admin can at any stage', (await save([L1, L2], [T1, T2])).status, 200);
   eq('an unknown action: 400', (await call('POST', { mva: Q.mva, action: 'nope' })).status, 400);
+  MVA.stage = 'Open';
+
+  /* 7 — the Claims Manager (Troy, 2026-10-30: "jay can print claim and email manually or email directly. Jay may
+     also have some paperwork to attach") */
+  session = S('Tom Gibson'); await save([L1, L2], [T1, T2]);
+  await call('POST', { mva: Q.mva, action: 'file', filename: 'kline.pdf', contentType: 'application/pdf', data: 'JVBERi0=' });
+  await call('POST', { mva: Q.mva, action: 'complete', done: true });
+  session = S('Jay Mcinnis');
+  r = await call('GET', null, Q);
+  eq('while the file is Open, Jay has no claims panel', r.json.claims, null);
+  r = await call('POST', { mva: Q.mva, action: 'paperwork', filename: 'x.pdf', data: 'JVBERi0=' });
+  ok('…and cannot attach paperwork yet', r.status === 409 && /once the file is verified/.test(r.json.error), JSON.stringify(r.json));
+  MVA.stage = 'With claims'; MVA.claimNo = ''; MVA.history = 'submitted\nverified';
+  r = await call('GET', null, Q);
+  eq('With claims: Jay gets the claims panel', [r.json.claims && r.json.claims.email, r.json.edit], [true, false]);
+  r = await call('POST', { mva: Q.mva, action: 'paperwork', filename: 'proof-of-loss.pdf', contentType: 'application/pdf', data: 'JVBERi0=' });
+  eq('his paperwork is attached to its own field', [r.status, r.json.invoice.paperwork.map(f => f.filename), uploads.slice(-1)[0].fieldId], [200, ['proof-of-loss.pdf'], 'fldoSDX2PNWtFnigT']);
+  r = await save([L1], []);
+  ok('…but he cannot change the invoice itself', r.status === 409, JSON.stringify(r.json));
+  session = S('Derek Melanson');
+  r = await call('POST', { mva: Q.mva, action: 'paperwork', filename: 'y.pdf', data: 'JVBERi0=' });
+  ok('the verifier cannot add claims paperwork', r.status === 403, JSON.stringify(r.json));
+  r = await call('GET', null, Q);
+  eq('…nor sees the claims panel', r.json.claims, null);
+  session = S('Jay Mcinnis');
+  // emailing it
+  const E = o => call('POST', Object.assign({ mva: Q.mva, action: 'email', to: 'claims@nordic.example.ca', insurer: 'Nordic Insurance (Intact)', claimNo: '8036599275', markFiled: true }, o || {}));
+  for (const [label, o, re] of [['no address', { to: '' }, /email address/], ['a bad address', { to: 'nordic at intact' }, /Not an email address/],
+    ['filing with no insurer', { insurer: '' }, /insurance company is needed/]]) { const x = await E(o); ok('email refused: ' + label, x.status === 400 && re.test(x.json.error), JSON.stringify(x.json)); }
+  MAILS = []; MVA_PATCHES = [];
+  r = await E({ cc: 'adjuster@nordic.example.ca', message: 'Please find our claim attached.', photos: true });
+  const m = MAILS[0] || {};
+  eq('emailed to the insurer, cc the adjuster and Jay, replies to Jay', [r.status, m.to, m.cc, m.replyTo], [200, ['claims@nordic.example.ca'], ['adjuster@nordic.example.ca', 'jmcinnis@mrdc.ca'], 'jmcinnis@mrdc.ca']);
+  ok('…the subject names the MVA, their claim no. and the policy', /2025-02-04-331\.000-WB.*8036599275/.test(m.subject), m.subject);
+  ok('…the body: his message, then the Accident Invoice with the total', /Please find our claim attached\./.test(m.html) && /ACCIDENT INVOICE/.test(m.html) && /\$22,102\.20/.test(m.html) && /872059894RT0001/.test(m.html), (m.html || '').slice(0, 200));
+  eq('…attachments: the third-party invoice, his paperwork and the photos', (m.attachments || []).map(a => a.filename), ['k.pdf', 'kline.pdf', 'proof-of-loss.pdf', 'scene.jpg', 'fixed.jpg']);   // k.pdf from section 5
+  ok('…each attached by its file link', (m.attachments || []).every(a => /^https:\/\/x\//.test(a.path)));
+  eq('…recorded as filed with the insurer, today', [MVA_PATCHES[0] && MVA_PATCHES[0].fldelaGXvgjkSNxpH, MVA_PATCHES[0] && MVA_PATCHES[0].fld5cVD0rOTNZ35l9, MVA_PATCHES[0] && MVA_PATCHES[0].fldPuYIFTuu8A59pz, MVA_PATCHES[0] && MVA_PATCHES[0].fldjIytSPIpJDAhr8],
+    ['Filed with insurance', 'Nordic Insurance (Intact)', '8036599275', 'Jay Mcinnis']);
+  ok('…with a history line', /Jay Mcinnis — filed with Nordic Insurance \(Intact\) \(claim 8036599275\) — emailed to claims@nordic\.example\.ca/.test(MVA_PATCHES[0].fldGYosJk4ajH70iq), MVA_PATCHES[0].fldGYosJk4ajH70iq);
+  ok('…and the email log says what went', /Jay Mcinnis — emailed claims@nordic\.example\.ca cc adjuster@nordic\.example\.ca, jmcinnis@mrdc\.ca · 5 attachments/.test(r.json.invoice.emailLog), r.json.invoice.emailLog);
+  eq('…the answer says so', [r.json.sent.mode, r.json.sent.filed, r.json.sent.attachments], ['Everyone', true, 5]);
+  MAILS = []; MVA_PATCHES = []; MVA.stage = 'Filed with insurance';
+  r = await E({ photos: false, markFiled: false });
+  eq('emailed again once filed (e.g. a resend): no photos, not re-filed', [r.status, (MAILS[0].attachments || []).length, MVA_PATCHES.length], [200, 3, 0]);
+  MVA.stage = 'With claims';
+  WF = { id: 'recWf', mode: 'Owner test' }; MAILS = []; MVA_PATCHES = [];
+  r = await E();
+  eq('Owner test: it goes to the Owner only, marked [TEST], naming who it was for', [r.status, MAILS[0].to, /^\[TEST\]/.test(MAILS[0].subject), /claims@nordic\.example\.ca/.test(MAILS[0].html)],
+    [200, ['TJohnston@mrdc.ca'], true, true]);
+  eq('…and the file is NOT recorded as filed', MVA_PATCHES.length, 0);
+  WF = { id: 'recWf', mode: 'Off' };
+  r = await E();
+  ok('Off: refused, pointing to print and email it yourself', r.status === 409 && /switched off/.test(r.json.error) && /Print the claim/.test(r.json.error), JSON.stringify(r.json));
+  WF = { id: 'recWf', mode: 'Everyone' }; MAIL_FAIL = 'Resend rejected it'; MVA_PATCHES = [];
+  r = await E();
+  ok('the send fails: says why, nothing recorded', r.status === 502 && /did not go out: Resend rejected it/.test(r.json.error) && MVA_PATCHES.length === 0, JSON.stringify(r.json));
+  MAIL_FAIL = '';
+  INV[Object.keys(INV)[0]].fields.fldKtfJMGadw1suzI = false;
+  r = await E();
+  ok('an invoice not marked complete is not emailed', r.status === 409 && /not marked complete/.test(r.json.error));
+  INV[Object.keys(INV)[0]].fields.fldKtfJMGadw1suzI = true;
+  MVA.stage = 'Paid';
+  r = await E();
+  ok('paid: nothing more to send', r.status === 409 && /paid/.test(r.json.error));
+  r = await call('POST', { mva: Q.mva, action: 'paperworkRemove', fileId: r && Object.values(INV)[0].fields.fldoSDX2PNWtFnigT[0].id });
+  eq('paperwork can still be filed (and removed) once paid', [r.status, r.json.invoice.paperwork.length], [200, 0]);
+  eq('the size cap leaves big files out and says so', X.attachmentsFor({ files: [{ url: 'u1', filename: 'a.pdf', size: 20e6 }], paperwork: [{ url: 'u2', filename: 'b.pdf', size: 20e6 }] }, []).left, ['b.pdf']);
   MVA.stage = 'Open';
 
   console.log(`\ntest-claim: ${pass} passed, ${fail} failed`);
